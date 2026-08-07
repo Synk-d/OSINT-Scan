@@ -199,6 +199,11 @@ hr { border-color: var(--line); }
 [data-testid="InputInstructions"] {
     display: none !important;
 }
+
+/* Hide Mapbox attribution completely */
+.mapboxgl-ctrl-attrib {
+    display: none !important;
+}
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -354,38 +359,53 @@ with st.sidebar:
 # interaction (toggling the DB expander, switching tabs, etc.) — so these
 # must NOT be called unconditionally on every rerun, only when a sweep is
 # actually triggered. Results are cached in session_state in between.
+#
+# No mock data on initial load — the dashboard starts genuinely empty.
+# domain_swept/user_swept track whether each side has ever actually been
+# run, so tabs can show an empty state instead of placeholder data.
+_EMPTY_DOMAIN_DF = pd.DataFrame(columns=[
+    "subdomain", "ip_address", "isp", "country", "lat", "lon",
+    "registrar", "mx_records", "discovered_at",
+])
+_EMPTY_USER_DF = pd.DataFrame(columns=[
+    "platform", "profile_url", "associated_email", "bio_keywords", "confidence", "discovered_at",
+])
+_EMPTY_REL_DF = pd.DataFrame(columns=["source", "target", "relationship_type", "confidence_score"])
+
 if "domain_val" not in st.session_state:
-    st.session_state.domain_val = "example.com"
+    st.session_state.domain_val = ""
 if "user_val" not in st.session_state:
-    st.session_state.user_val = "octocat"
+    st.session_state.user_val = ""
 if "domain_df" not in st.session_state:
-    st.session_state.domain_df = mock_domain_osint(st.session_state.domain_val)
-    data_source["domain"] = "mock"
+    st.session_state.domain_df = _EMPTY_DOMAIN_DF
 if "user_df" not in st.session_state:
-    st.session_state.user_df = mock_user_osint(st.session_state.user_val)
-    data_source["user"] = "mock"
+    st.session_state.user_df = _EMPTY_USER_DF
 if "rel_df" not in st.session_state:
-    st.session_state.rel_df = mock_relationships(
-        st.session_state.domain_df, st.session_state.user_df,
-        st.session_state.domain_val, st.session_state.user_val,
-    )
+    st.session_state.rel_df = _EMPTY_REL_DF
+if "domain_swept" not in st.session_state:
+    st.session_state.domain_swept = False
+if "user_swept" not in st.session_state:
+    st.session_state.user_swept = False
 if "data_source" not in st.session_state:
-    st.session_state.data_source = dict(data_source)
+    st.session_state.data_source = {"domain": "mock", "user": "mock"}
 
 if sweep and target_value.strip():
     if target_type == "domain":
         st.session_state.domain_val = target_value.strip()
         with st.spinner(f"Sweeping {target_value.strip()} — live lookups can take up to a minute…"):
             st.session_state.domain_df = run_domain_osint(st.session_state.domain_val)
+        st.session_state.domain_swept = True
     else:
         st.session_state.user_val = target_value.strip()
         with st.spinner(f"Sweeping @{target_value.strip()} — checking live sources…"):
             st.session_state.user_df = run_user_osint(st.session_state.user_val)
+        st.session_state.user_swept = True
 
-    st.session_state.rel_df = generate_auto_relationships(
-        st.session_state.domain_df, st.session_state.user_df,
-        st.session_state.domain_val, st.session_state.user_val,
-    )
+    if st.session_state.domain_swept and st.session_state.user_swept:
+        st.session_state.rel_df = generate_auto_relationships(
+            st.session_state.domain_df, st.session_state.user_df,
+            st.session_state.domain_val, st.session_state.user_val,
+        )
     st.session_state.data_source = dict(data_source)
     persist_sweep(
         st.session_state.domain_val, st.session_state.user_val,
@@ -397,20 +417,46 @@ user_val = st.session_state.user_val
 domain_df = st.session_state.domain_df
 user_df = st.session_state.user_df
 rel_df = st.session_state.rel_df
+domain_swept = st.session_state.domain_swept
+user_swept = st.session_state.user_swept
 
 source_label = " · ".join(
-    f"{k} {'live' if v == 'live' else 'mock'}" for k, v in st.session_state.data_source.items()
+    f"{k} {'live' if v == 'live' else 'mock'}"
+    for k, v in st.session_state.data_source.items()
+    if (k == "domain" and domain_swept) or (k == "user" and user_swept)
 )
 
 # Render the dynamic header on the main page
+case_label = " &nbsp;/&nbsp; ".join(
+    filter(None, [
+        domain_val if domain_swept else None,
+        f"@{user_val}" if user_swept else None,
+    ])
+) or "No sweep yet"
+
 st.markdown(f"""
 <div class="main-header">
-    <div class="console-sub">Active case · {domain_val} &nbsp;/&nbsp; @{user_val}</div>
+    <div class="console-sub">Active case · {case_label}</div>
     <div class="console-clock">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         <span class="dim">{source_label}</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
+
+# Nothing swept yet at all — show a clean empty state instead of the full
+# dashboard scaffold with zeroed-out metrics and empty charts.
+if not domain_swept and not user_swept:
+    st.markdown("""
+    <div style="text-align:center; padding: 80px 20px; color: var(--text-dim);">
+        <div style="font-size: 1rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--amber); margin-bottom: 10px;">
+            No sweep yet
+        </div>
+        <div style="font-size: 0.85rem;">
+            Enter a domain or username in the sidebar and hit Start Sweep to begin.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.stop()
 
 # ----------------------------------------------------------------------------
 # TOP METRICS
@@ -452,116 +498,145 @@ tab1, tab2, tab3 = st.tabs(["Infrastructure Analytics", "Identity Footprinting",
 
 # ---- TAB 1: Infrastructure Analytics -----------------------------------
 with tab1:
-    left, right = st.columns([1, 1.3])
+    if not domain_swept:
+        st.markdown("""
+        <div style="text-align:center; padding: 60px 20px; color: var(--text-dim);">
+            Run a domain sweep to see infrastructure analytics.
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        left, right = st.columns([1, 1.3])
 
-    with left:
-        st.markdown("<div class='section-eyebrow'>Hosting / ISP Breakdown</div>", unsafe_allow_html=True)
-        isp_counts = domain_df["isp"].value_counts().reset_index()
-        isp_counts.columns = ["isp", "count"]
-        fig_bar = px.bar(isp_counts, x="count", y="isp", orientation="h",
-                          color_discrete_sequence=["#F0A63A"])
-        fig_bar.update_traces(marker_line_width=0)
-        st.plotly_chart(style_fig(fig_bar), width='stretch')
+        with left:
+            st.markdown("<div class='section-eyebrow'>Hosting / ISP Breakdown</div>", unsafe_allow_html=True)
+            isp_counts = domain_df["isp"].value_counts().reset_index()
+            isp_counts.columns = ["isp", "count"]
+            fig_bar = px.bar(isp_counts, x="count", y="isp", orientation="h",
+                              color_discrete_sequence=["#F0A63A"])
+            fig_bar.update_traces(marker_line_width=0)
+            st.plotly_chart(style_fig(fig_bar))
 
-    with right:
-        st.markdown("<div class='section-eyebrow'>Resolved IP Geolocation</div>", unsafe_allow_html=True)
-        fig_map = px.scatter_map(
-            domain_df, lat="lat", lon="lon", hover_name="subdomain",
-            hover_data={"ip_address": True, "isp": True, "lat": False, "lon": False},
-            color_discrete_sequence=["#4FD9C9"], zoom=1,
+        with right:
+            st.markdown("<div class='section-eyebrow'>Resolved IP Geolocation</div>", unsafe_allow_html=True)
+            fig_map = px.scatter_map(
+                domain_df, lat="lat", lon="lon", hover_name="subdomain",
+                hover_data={"ip_address": True, "isp": True, "lat": False, "lon": False},
+                color_discrete_sequence=["#4FD9C9"], zoom=1,
+            )
+            fig_map.update_traces(marker=dict(size=12))
+            fig_map.update_layout(map_style="carto-darkmatter")
+            st.plotly_chart(style_fig(fig_map, height=380))
+
+        st.markdown("<div class='section-eyebrow'>Subdomain Register</div>", unsafe_allow_html=True)
+        show_df = domain_df.copy()
+        show_df["mx_records"] = show_df["mx_records"].apply(lambda x: ", ".join(x))
+        st.dataframe(
+            show_df[["subdomain", "ip_address", "isp", "registrar", "mx_records", "discovered_at"]],
+            width='stretch', hide_index=True,
         )
-        fig_map.update_traces(marker=dict(size=12))
-        fig_map.update_layout(map_style="carto-darkmatter")
-        st.plotly_chart(style_fig(fig_map, height=380), width='stretch')
-
-    st.markdown("<div class='section-eyebrow'>Subdomain Register</div>", unsafe_allow_html=True)
-    show_df = domain_df.copy()
-    show_df["mx_records"] = show_df["mx_records"].apply(lambda x: ", ".join(x))
-    st.dataframe(
-        show_df[["subdomain", "ip_address", "isp", "registrar", "mx_records", "discovered_at"]],
-        width='stretch', hide_index=True,
-    )
 
 # ---- TAB 2: Identity Footprinting ---------------------------------------
 with tab2:
-    left, right = st.columns([1, 1])
+    if not user_swept:
+        st.markdown("""
+        <div style="text-align:center; padding: 60px 20px; color: var(--text-dim);">
+            Run a user sweep to see identity footprinting.
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        left, right = st.columns([1, 1])
 
-    with left:
-        st.markdown("<div class='section-eyebrow'>Platform Detection Matrix</div>", unsafe_allow_html=True)
-        pf = user_df.sort_values("confidence", ascending=True)
-        fig_pf = px.bar(pf, x="confidence", y="platform", orientation="h",
-                         color="confidence", color_continuous_scale=["#223038", "#4FD9C9", "#F0A63A"])
-        fig_pf.update_coloraxes(showscale=False)
-        fig_pf.update_layout(xaxis_title="confidence score", yaxis_title="")
-        st.plotly_chart(style_fig(fig_pf), width='stretch')
+        with left:
+            st.markdown("<div class='section-eyebrow'>Platform Detection Matrix</div>", unsafe_allow_html=True)
+            pf = user_df.sort_values("confidence", ascending=True)
+            fig_pf = px.bar(pf, x="confidence", y="platform", orientation="h",
+                             color="confidence", color_continuous_scale=["#223038", "#4FD9C9", "#F0A63A"])
+            fig_pf.update_coloraxes(showscale=False)
+            fig_pf.update_layout(xaxis_title="confidence score", yaxis_title="")
+            st.plotly_chart(style_fig(fig_pf))
 
-    with right:
-        st.markdown("<div class='section-eyebrow'>Bio Keyword Trends</div>", unsafe_allow_html=True)
-        kw_rows = []
-        for _, r in user_df.iterrows():
-            for kw in r["bio_keywords"]:
-                kw_rows.append(kw)
-        kw_df = pd.Series(kw_rows).value_counts().reset_index()
-        kw_df.columns = ["keyword", "count"]
-        rng = _seed(user_val + "bubble")
-        kw_df["x"] = [rng.uniform(0, 10) for _ in range(len(kw_df))]
-        kw_df["y"] = [rng.uniform(0, 10) for _ in range(len(kw_df))]
-        fig_bubble = px.scatter(
-            kw_df, x="x", y="y", size="count", text="keyword", size_max=60,
-            color="count", color_continuous_scale=["#223038", "#F0A63A"],
+        with right:
+            st.markdown("<div class='section-eyebrow'>Bio Keyword Trends</div>", unsafe_allow_html=True)
+            kw_rows = []
+            for _, r in user_df.iterrows():
+                for kw in r["bio_keywords"]:
+                    kw_rows.append(kw)
+            kw_df = pd.Series(kw_rows).value_counts().reset_index()
+            kw_df.columns = ["keyword", "count"]
+            rng = _seed(user_val + "bubble")
+            kw_df["x"] = [rng.uniform(0, 10) for _ in range(len(kw_df))]
+            kw_df["y"] = [rng.uniform(0, 10) for _ in range(len(kw_df))]
+            fig_bubble = px.scatter(
+                kw_df, x="x", y="y", size="count", text="keyword", size_max=60,
+                color="count", color_continuous_scale=["#223038", "#F0A63A"],
+            )
+            fig_bubble.update_traces(textposition="middle center", textfont=dict(color="#0A0D10", size=10))
+            fig_bubble.update_coloraxes(showscale=False)
+            fig_bubble.update_xaxes(visible=False)
+            fig_bubble.update_yaxes(visible=False)
+            st.plotly_chart(style_fig(fig_bubble))
+
+        st.markdown("<div class='section-eyebrow'>Verified Profile Hits</div>", unsafe_allow_html=True)
+        show_u = user_df.copy()
+        show_u["bio_keywords"] = show_u["bio_keywords"].apply(lambda x: ", ".join(x))
+        show_u["associated_email"] = show_u["associated_email"].fillna("— masked / not found —")
+        st.dataframe(
+            show_u[["platform", "profile_url", "associated_email", "confidence", "bio_keywords"]],
+            width='stretch', hide_index=True,
         )
-        fig_bubble.update_traces(textposition="middle center", textfont=dict(color="#0A0D10", size=10))
-        fig_bubble.update_coloraxes(showscale=False)
-        fig_bubble.update_xaxes(visible=False)
-        fig_bubble.update_yaxes(visible=False)
-        st.plotly_chart(style_fig(fig_bubble), width='stretch')
-
-    st.markdown("<div class='section-eyebrow'>Verified Profile Hits</div>", unsafe_allow_html=True)
-    show_u = user_df.copy()
-    show_u["bio_keywords"] = show_u["bio_keywords"].apply(lambda x: ", ".join(x))
-    show_u["associated_email"] = show_u["associated_email"].fillna("— masked / not found —")
-    st.dataframe(
-        show_u[["platform", "profile_url", "associated_email", "confidence", "bio_keywords"]],
-        width='stretch', hide_index=True,
-    )
 
 # ---- TAB 3: Entity Link Graph --------------------------------------------
 with tab3:
-    st.markdown("<div class='section-eyebrow'>Cross-Entity Correlation Topology</div>", unsafe_allow_html=True)
-    physics_on = st.toggle("Enable physics engine", value=True)
+    if not (domain_swept and user_swept):
+        missing = []
+        if not domain_swept:
+            missing.append("a domain")
+        if not user_swept:
+            missing.append("a user")
+        st.markdown(f"""
+        <div style="text-align:center; padding: 60px 20px; color: var(--text-dim);">
+            Run {" and ".join(missing)} sweep to see cross-entity relationships.
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("<div class='section-eyebrow'>Cross-Entity Correlation Topology</div>", unsafe_allow_html=True)
+        physics_on = st.toggle("Enable physics engine", value=True)
 
-    net = Network(height="520px", width="100%", bgcolor="#0A0D10", font_color="#C9D3D6", directed=False)
-    net.add_node(domain_val, label=domain_val, color="#4FD9C9", shape="dot", size=26, title="Domain (root)")
-    net.add_node(user_val, label=f"@{user_val}", color="#3AD65B", shape="dot", size=26, title="Username (root)")
+        net = Network(height="520px", width="100%", bgcolor="#0A0D10", font_color="#C9D3D6", directed=False)
+        net.add_node(domain_val, label=domain_val, color="#4FD9C9", shape="dot", size=26, title="Domain (root)")
+        net.add_node(user_val, label=f"@{user_val}", color="#3AD65B", shape="dot", size=26, title="Username (root)")
 
-    for _, r in domain_df.head(6).iterrows():
-        net.add_node(r["subdomain"], color="#4FD9C9", shape="dot", size=14, title=r["ip_address"])
-        net.add_node(r["ip_address"], color="#E8544B", shape="dot", size=10, title="Resolved IP")
-        net.add_edge(domain_val, r["subdomain"])
-        net.add_edge(r["subdomain"], r["ip_address"])
+        for _, r in domain_df.head(6).iterrows():
+            net.add_node(r["subdomain"], color="#4FD9C9", shape="dot", size=14, title=r["ip_address"])
+            net.add_node(r["ip_address"], color="#E8544B", shape="dot", size=10, title="Resolved IP")
+            net.add_edge(domain_val, r["subdomain"])
+            net.add_edge(r["subdomain"], r["ip_address"])
 
-    for _, r in user_df.iterrows():
-        net.add_node(r["platform"], color="#3AD65B", shape="dot", size=14, title=r["profile_url"])
-        net.add_edge(user_val, r["platform"])
+        for _, r in user_df.iterrows():
+            net.add_node(r["platform"], color="#3AD65B", shape="dot", size=14, title=r["profile_url"])
+            net.add_edge(user_val, r["platform"])
 
-    for _, r in rel_df.iterrows():
-        if r["source"] in net.get_nodes() and r["target"] in net.get_nodes():
-            net.add_edge(r["source"], r["target"], color="#F0A63A", title=f"{r['relationship_type']} ({r['confidence_score']}%)", dashes=True)
+        for _, r in rel_df.iterrows():
+            if r["source"] in net.get_nodes() and r["target"] in net.get_nodes():
+                net.add_edge(r["source"], r["target"], color="#F0A63A", title=f"{r['relationship_type']} ({r['confidence_score']}%)", dashes=True)
 
-    net.toggle_physics(physics_on)
-    net.set_edge_smooth("dynamic")
-    html_path = "/tmp/entity_graph.html"
-    net.write_html(html_path)
-    with open(html_path, "r", encoding="utf-8") as f:
-        graph_html = f.read()
-    components.html(graph_html, height=540, scrolling=False)
+        net.toggle_physics(physics_on)
+        net.set_edge_smooth("dynamic")
+        html_path = "/tmp/entity_graph.html"
+        net.write_html(html_path)
+        with open(html_path, "r", encoding="utf-8") as f:
+            graph_html = f.read()
+        components.html(graph_html, height=540, scrolling=False)
 
-    st.markdown("<div class='section-eyebrow'>Relationship Register</div>", unsafe_allow_html=True)
-    for _, r in rel_df.iterrows():
-        conf = r["confidence_score"]
-        cls = "high" if conf >= 80 else "med" if conf >= 55 else "low"
-        st.markdown(
-            f"`{r['source']}`  →  `{r['target']}`  &nbsp; "
-            f"<span class='chip {cls}'>{r['relationship_type']} · {conf}%</span>",
-            unsafe_allow_html=True,
-        )
+        st.markdown("<div class='section-eyebrow'>Relationship Register</div>", unsafe_allow_html=True)
+        if rel_df.empty:
+            st.markdown("<p style='color:var(--text-dim); font-size:0.8rem;'>No correlating signals found between this domain and user.</p>", unsafe_allow_html=True)
+        else:
+            for _, r in rel_df.iterrows():
+                conf = r["confidence_score"]
+                cls = "high" if conf >= 80 else "med" if conf >= 55 else "low"
+                st.markdown(
+                    f"`{r['source']}`  →  `{r['target']}`  &nbsp; "
+                    f"<span class='chip {cls}'>{r['relationship_type']} · {conf}%</span>",
+                    unsafe_allow_html=True,
+                )
