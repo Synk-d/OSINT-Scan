@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 run_domain_osint(domain_value) — real implementation.
 
@@ -22,7 +24,10 @@ import re
 import socket
 import time
 from datetime import datetime
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 import dns.resolver
 import requests
@@ -108,7 +113,7 @@ def _geo_lookup(ip_address: str) -> dict:
                 "lon": data.get("lon", 0.0),
             }
     except (requests.RequestException, ValueError):
-        pass
+        return {"isp": "Unknown", "country": "—", "lat": 0.0, "lon": 0.0}
     return {"isp": "Unknown", "country": "—", "lat": 0.0, "lon": 0.0}
 
 

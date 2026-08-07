@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 run_user_osint(username_value) — real implementation.
 
@@ -21,7 +23,10 @@ caller falls back to mock data.
 
 import os
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 import requests
 
@@ -33,7 +38,12 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 
 
 class OsintLookupError(Exception):
-    pass
+    """Raised when live user lookup cannot proceed."""
+
+
+def _extract_keywords(text: str, limit: int = 6) -> list[str]:
+    keywords = [w.strip("#.,!").lower() for w in (text or "").split() if len(w) > 3]
+    return keywords[:limit] or ["no-bio-set"]
 
 
 def _check_github(username: str) -> Optional[dict]:
@@ -47,13 +57,11 @@ def _check_github(username: str) -> Optional[dict]:
         if resp.status_code != 200:
             return None
         data = resp.json()
-        bio = (data.get("bio") or "")
-        keywords = [w.strip("#.,!").lower() for w in bio.split() if len(w) > 3][:6]
         return {
             "platform": "GitHub",
             "profile_url": data.get("html_url", f"https://github.com/{username}"),
             "associated_email": data.get("email"),
-            "bio_keywords": keywords or ["no-bio-set"],
+            "bio_keywords": _extract_keywords(data.get("bio") or ""),
             "confidence": 97,
         }
     except requests.RequestException:
@@ -70,12 +78,11 @@ def _check_reddit(username: str) -> Optional[dict]:
             return None
         data = resp.json().get("data", {})
         bio = data.get("subreddit", {}).get("public_description", "") or ""
-        keywords = [w.strip("#.,!").lower() for w in bio.split() if len(w) > 3][:6]
         return {
             "platform": "Reddit",
             "profile_url": f"https://reddit.com/user/{username}",
             "associated_email": None,
-            "bio_keywords": keywords or ["no-bio-set"],
+            "bio_keywords": _extract_keywords(bio),
             "confidence": 90,
         }
     except requests.RequestException:
@@ -93,12 +100,11 @@ def _check_keybase(username: str) -> Optional[dict]:
             return None
         them = data["them"][0]
         bio = (them.get("profile", {}) or {}).get("bio", "") or ""
-        keywords = [w.strip("#.,!").lower() for w in bio.split() if len(w) > 3][:6]
         return {
             "platform": "Keybase",
             "profile_url": f"https://keybase.io/{username}",
             "associated_email": None,
-            "bio_keywords": keywords or ["no-bio-set"],
+            "bio_keywords": _extract_keywords(bio),
             "confidence": 93,
         }
     except (requests.RequestException, ValueError, KeyError, IndexError):
