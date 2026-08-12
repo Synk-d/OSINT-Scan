@@ -30,7 +30,7 @@ def calculate_risk_score(
     """
     Computes a composite Threat Severity Score (0-100).
     """
-    score = 5  # Baseline minimal score
+    score = 0  # Default baseline score for fresh page
     breakdown: List[Dict[str, Any]] = []
 
     # 1. Shodan Ports Assessment

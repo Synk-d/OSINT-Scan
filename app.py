@@ -403,10 +403,10 @@ with st.sidebar:
         st.markdown("<p style='color:var(--text-dim); font-size:0.75rem; font-style:italic;'>No recent sweeps found.</p>", unsafe_allow_html=True)
     else:
         for item in st.session_state.history:
-            icon = "👤" if item["type"] == "Username" else "🌐"
+            icon = ""
             st.markdown(f"""
             <div class="history-item">
-                <span class="target">{icon} &nbsp; {item['target']}</span>
+                <span class="target">{item['target']}</span>
                 <span class="time">{item['time']}</span>
             </div>
             """, unsafe_allow_html=True)
@@ -430,7 +430,7 @@ if sweep and target_value.strip():
         if is_ip:
             is_valid, error_msg, cleaned_val = validate_ip_address(raw_val)
             if not is_valid:
-                st.error(f"❌ {error_msg}")
+                st.error(f"{error_msg}")
             else:
                 st.session_state.ip_val = cleaned_val
                 try:
@@ -440,11 +440,11 @@ if sweep and target_value.strip():
                         st.session_state.data_source["ip"] = src
                     st.session_state.ip_swept = True
                 except Exception as e:
-                    st.error(f"❌ IP Geolocation failed: {e}")
+                    st.error(f"IP Geolocation failed: {e}")
         else:
             is_valid, error_msg, cleaned_val = validate_domain(raw_val)
             if not is_valid:
-                st.error(f"❌ {error_msg}")
+                st.error(f"{error_msg}")
             else:
                 st.session_state.domain_val = cleaned_val
                 try:
@@ -454,12 +454,12 @@ if sweep and target_value.strip():
                         st.session_state.data_source["domain"] = src
                     st.session_state.domain_swept = True
                 except Exception as e:
-                    st.error(f"❌ Domain lookup failed: {e}")
+                    st.error(f"Domain lookup failed: {e}")
 
     else:  # Username
         is_valid, error_msg, cleaned_val = validate_username(raw_val)
         if not is_valid:
-            st.error(f"❌ {error_msg}")
+            st.error(f"{error_msg}")
         else:
             st.session_state.user_val = cleaned_val
             try:
@@ -504,7 +504,7 @@ case_label = " &nbsp;/&nbsp; ".join(
     filter(None, [
         domain_val if domain_swept else None,
         f"@{user_val}" if user_swept else None,
-        f"📍 {ip_val}" if ip_swept else None,
+        f"IP: {ip_val}" if ip_swept else None,
     ])
 ) or "No sweep yet"
 
@@ -643,20 +643,18 @@ with c4:
     </div>
     """, unsafe_allow_html=True)
 with c5:
-    st.markdown(f"""
-    <div class="metric-card" style="border-left-color: {risk_result['color']};">
-        <div class="metric-label">Threat Severity Score</div>
-        <div class="metric-value" style="color: {risk_result['color']}; font-size:1.5rem;">
-            {risk_result['score']} <span style="font-size:0.8rem; color:var(--text-dim);">/100</span>
-            <span style="font-size:0.65rem; background:{risk_result['badge_bg']}; color:{risk_result['color']}; padding:2px 6px; border-radius:2px; vertical-align:middle; margin-left:4px; font-weight:700;">
-                {risk_result['level']}
-            </span>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    badge_html = f'<span style="font-size:0.65rem; background:{risk_result["badge_bg"]}; color:{risk_result["color"]}; padding:2px 6px; border-radius:2px; vertical-align:middle; margin-left:4px; font-weight:700;">{risk_result["level"]}</span>' if risk_result['level'] != "LOW" else ""
+    st.markdown(
+        f'<div class="metric-card" style="border-left-color: {risk_result["color"]};">'
+        f'<div class="metric-label">Threat Severity Score</div>'
+        f'<div class="metric-value" style="color: {risk_result["color"]}; font-size:1.5rem;">'
+        f'{risk_result["score"]} <span style="font-size:0.8rem; color:var(--text-dim);">/100</span> {badge_html}'
+        f'</div></div>',
+        unsafe_allow_html=True
+    )
 
 if risk_result["breakdown"]:
-    with st.expander(f"🎯 Cyber Risk & Vulnerability Breakdown ({risk_result['score']}/100 — {risk_result['level']})", expanded=False):
+    with st.expander(f"Cyber Risk & Vulnerability Breakdown ({risk_result['score']}/100 — {risk_result['level']})", expanded=False):
         for item in risk_result["breakdown"]:
             bd_color = "#E8544B" if item["severity"] == "CRITICAL" else "#FF7849" if item["severity"] == "HIGH" else "#F0A63A"
             chip_cls = "high" if item["severity"] in ("CRITICAL", "HIGH") else "med"
@@ -694,9 +692,9 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # ---- TAB 1: Infrastructure & IP Geolocation ------------------------------
 with tab1:
     if "domain" in st.session_state.failures:
-        st.warning(f"⚠️ Domain lookup warning: {st.session_state.failures['domain']}")
+        st.warning(f"Domain lookup warning: {st.session_state.failures['domain']}")
     if "ip" in st.session_state.failures:
-        st.warning(f"⚠️ IP lookup warning: {st.session_state.failures['ip']}")
+        st.warning(f"IP lookup warning: {st.session_state.failures['ip']}")
 
     # Render location highlight cards if data is available
     if not combined_infra_df.empty:
@@ -760,10 +758,10 @@ with tab1:
         with p2:
             st.markdown("**Exposed Vulnerabilities (CVEs)**")
             if s_cves:
-                cve_chips = " ".join([f"<span class='chip high'>⚠️ {cve}</span>" for cve in s_cves[:8]])
+                cve_chips = " ".join([f"<span class='chip high'>{cve}</span>" for cve in s_cves[:8]])
                 st.markdown(cve_chips, unsafe_allow_html=True)
             else:
-                st.markdown("<p style='color:var(--cyan); font-size:0.75rem;'>✅ Zero exposed CVE vulnerabilities indexed.</p>", unsafe_allow_html=True)
+                st.markdown("<p style='color:var(--cyan); font-size:0.75rem;'>Zero exposed CVE vulnerabilities indexed.</p>", unsafe_allow_html=True)
         with p3:
             st.markdown("**Indexed Hostnames**")
             if s_hosts:
@@ -845,7 +843,7 @@ with tab1:
 # ---- TAB 2: Identity Footprinting & User OSINT ---------------------------
 with tab2:
     if "user" in st.session_state.failures:
-        st.warning(f"⚠️ User lookup warning: {st.session_state.failures['user']}")
+        st.warning(f"User lookup warning: {st.session_state.failures['user']}")
     
     if not user_df.empty:
         # Display 5 Key Highlights Cards for User OSINT
@@ -960,7 +958,7 @@ with tab2:
 # ---- TAB 3: Topology & Link Graph ----------------------------------------
 with tab3:
     if "relationships" in st.session_state.failures:
-        st.warning(f"⚠️ Relationship analysis warning: {st.session_state.failures['relationships']}")
+        st.warning(f"Relationship analysis warning: {st.session_state.failures['relationships']}")
 
     st.markdown("<div class='section-eyebrow'>Infrastructure & Identity Topology Correlation</div>", unsafe_allow_html=True)
     physics_on = st.toggle("Enable physics engine", value=True)
@@ -971,7 +969,7 @@ with tab3:
     if user_val:
         net.add_node(user_val, label=f"@{user_val}", color="#3AD65B", shape="dot", size=28, title="Username (root)")
     if ip_val:
-        net.add_node(ip_val, label=f"📍 {ip_val}", color="#A855F7", shape="dot", size=28, title="IP Target (root)")
+        net.add_node(ip_val, label=f"IP: {ip_val}", color="#A855F7", shape="dot", size=28, title="IP Target (root)")
 
     for _, r in domain_df.head(10).iterrows():
         net.add_node(r["subdomain"], color="#4FD9C9", shape="dot", size=14, title=r["ip_address"])
