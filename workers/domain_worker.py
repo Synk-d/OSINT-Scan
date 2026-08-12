@@ -25,9 +25,11 @@ import time
 from datetime import datetime
 from typing import List, Optional
 
+# pyrefly: ignore [missing-import]
 import dns.resolver
 import pandas as pd
 import requests
+# pyrefly: ignore [missing-import]
 import whois as whois_lib
 
 from workers.net_utils import DOMAIN_RE, get_with_retry

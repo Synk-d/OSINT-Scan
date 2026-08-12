@@ -416,18 +416,78 @@ def _check_codepen(username: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _generate_candidate_handles(input_val: str) -> List[str]:
+    """Generates candidate handles for full names (e.g. 'Arushi Batham' -> ['arushibatham', 'arushi-batham', 'arushi_batham', 'arushi.batham'])."""
+    clean = input_val.strip().lstrip("@")
+    if not clean:
+        return []
+    
+    if " " not in clean:
+        return [clean]
+
+    parts = [p.lower() for p in re.findall(r"[a-zA-Z0-9_.-]+", clean) if p]
+    if not parts:
+        return [clean.replace(" ", "")]
+
+    candidates = [
+        "".join(parts),
+        "-".join(parts),
+        "_".join(parts),
+        ".".join(parts),
+    ]
+    
+    seen = set()
+    unique_candidates = []
+    for c in candidates:
+        if c and c not in seen:
+            seen.add(c)
+            unique_candidates.append(c)
+    return unique_candidates
+
+
+def _search_github_by_name(full_name: str) -> List[str]:
+    """Search GitHub for users by full name or query string and return matching usernames."""
+    headers = dict(HEADERS)
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    try:
+        query = full_name.strip()
+        resp = get_with_retry(
+            "https://api.github.com/search/users",
+            params={"q": f"{query} in:name", "per_page": 3},
+            timeout=HTTP_TIMEOUT,
+            headers=headers
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            items = data.get("items", [])
+            return [item["login"] for item in items if "login" in item]
+    except Exception:
+        pass
+    return []
+
+
 # ----------------------------------------------------------------------------
 # MAIN USER OSINT ENTRYPOINT
 # ----------------------------------------------------------------------------
 
 def run_user_osint(username_value: str) -> pd.DataFrame:
     """
-    Executes real live Multi-Engine Username OSINT & Footprinting across 12+ platforms.
-    Returns pandas DataFrame with verified findings.
+    Executes real live Multi-Engine Username & Full Name OSINT across 12+ platforms.
+    Supports single handle usernames and full names with spaces (e.g. 'Arushi Batham').
     """
-    clean_u = username_value.strip().lstrip("@")
-    if not clean_u:
-        raise OsintLookupError("Username cannot be empty.")
+    raw_input = username_value.strip().lstrip("@")
+    if not raw_input:
+        raise OsintLookupError("Username or full name cannot be empty.")
+
+    candidate_handles = _generate_candidate_handles(raw_input)
+    
+    # If full name with spaces, also search GitHub users by name
+    if " " in raw_input:
+        gh_matches = _search_github_by_name(raw_input)
+        for handle in gh_matches:
+            if handle not in candidate_handles:
+                candidate_handles.append(handle)
 
     workers = [
         _check_github,
@@ -445,19 +505,25 @@ def run_user_osint(username_value: str) -> pd.DataFrame:
     ]
 
     results: List[Dict[str, Any]] = []
-    for worker_fn in workers:
-        try:
-            res = worker_fn(clean_u)
-            if res:
-                results.append(res)
-        except Exception:
-            continue
+    seen_platforms = set()
+
+    for handle in candidate_handles:
+        for worker_fn in workers:
+            try:
+                res = worker_fn(handle)
+                if res and res["platform"] not in seen_platforms:
+                    seen_platforms.add(res["platform"])
+                    results.append(res)
+            except Exception:
+                continue
 
     if not results:
-        raise OsintLookupError(f"No verified platform hits found for username '@{clean_u}' across 12+ public OSINT engines.")
+        tested_str = ", ".join(f"'{h}'" for h in candidate_handles[:4])
+        raise OsintLookupError(f"No verified platform hits found for target '{raw_input}' (tested handles: {tested_str}) across 12+ public OSINT engines.")
 
     now = datetime.now()
     for row in results:
         row["discovered_at"] = now
 
     return pd.DataFrame(results)
+

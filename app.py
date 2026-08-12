@@ -294,13 +294,13 @@ def validate_domain(domain_value: str) -> tuple[bool, str, str]:
 
 
 def validate_username(username_value: str) -> tuple[bool, str, str]:
-    """Validate username input. Returns (is_valid, error_message, cleaned_username)."""
+    """Validate username or full name input. Returns (is_valid, error_message, cleaned_username)."""
     cleaned = clean_user_input(username_value)
     if not cleaned:
-        return False, "Username cannot be empty.", ""
+        return False, "Username or full name cannot be empty.", ""
     if len(cleaned) < 2:
-        return False, "Username must be at least 2 characters.", ""
-    if not re.match(r"^[a-zA-Z0-9_.-]+$", cleaned):
+        return False, "Username / name must be at least 2 characters.", ""
+    if not re.match(r"^[a-zA-Z0-9_.\- ]+$", cleaned):
         return False, f"'{username_value}' contains invalid characters.", ""
     return True, "", cleaned
 
@@ -366,7 +366,7 @@ with st.sidebar:
     """, unsafe_allow_html=True)
     
     st.markdown("<div class='section-eyebrow'>Target Ingestion</div>", unsafe_allow_html=True)
-    target_type = st.radio("Target type", ["Domain / IP", "Username"], horizontal=True, label_visibility="collapsed")
+    target_type = st.radio("Target type", ["Domain / IP", "Username / Name"], horizontal=True, label_visibility="collapsed")
 
     if target_type == "Domain / IP":
         target_value = st.text_input(
@@ -375,7 +375,7 @@ with st.sidebar:
         )
     else:
         target_value = st.text_input(
-            "Target Username", value="", placeholder="e.g. torvalds or sneyank",
+            "Target Username or Full Name", value="", placeholder="e.g. torvalds or Arushi Batham",
             key="user_input", label_visibility="collapsed",
         )
 
@@ -469,7 +469,7 @@ if sweep and target_value.strip():
                     st.session_state.data_source["user"] = src
                 st.session_state.user_swept = True
             except Exception as e:
-                st.error(f"❌ Username footprinting failed: {e}")
+                st.error(f"Username footprinting failed: {e}")
 
     if st.session_state.domain_swept and st.session_state.user_swept:
         try:
@@ -685,10 +685,10 @@ def style_fig(fig, height=380):
 # TABS
 # ----------------------------------------------------------------------------
 tab1, tab2, tab3, tab4 = st.tabs([
-    "Infrastructure & IP Geolocation",
-    "Identity Footprinting & User OSINT",
-    "Topology & Link Graph",
-    "🗺️ Tactical GeoINT Map"
+    "Infrastructure",
+    "Identity Info",
+    "Link Graph",
+    "Geo Map"
 ])
 
 # ---- TAB 1: Infrastructure & IP Geolocation ------------------------------
@@ -820,7 +820,7 @@ with tab1:
         st.plotly_chart(style_fig(fig_reg, height=210))
 
     with right:
-        st.markdown("<div class='section-eyebrow'>Interactive Geolocation Map</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-eyebrow'>Map</div>", unsafe_allow_html=True)
         geo_df = combined_infra_df[(combined_infra_df["lat"] != 0.0) | (combined_infra_df["lon"] != 0.0)] if not combined_infra_df.empty else pd.DataFrame()
         if geo_df.empty:
             geo_df = pd.DataFrame({"lat": [], "lon": [], "target_label": [], "ip_address": [], "isp": [], "region_name": [], "city": [], "country": []})
@@ -1032,7 +1032,7 @@ with tab4:
                 s_ports_str = ", ".join(str(p) for p in r.get("shodan_ports", [])) or "None"
                 map_nodes.append({
                     "node_type": "Primary IP Target",
-                    "label": f"📍 {r['ip_address']}",
+                    "label": f"{r['ip_address']}",
                     "ip_address": r["ip_address"],
                     "lat": float(r["lat"]),
                     "lon": float(r["lon"]),
@@ -1049,7 +1049,7 @@ with tab4:
             if float(r.get("lat", 0.0)) != 0.0 or float(r.get("lon", 0.0)) != 0.0:
                 map_nodes.append({
                     "node_type": "Subdomain / Infra Node",
-                    "label": f"🌐 {r['subdomain']}",
+                    "label": f"{r['subdomain']}",
                     "ip_address": r.get("ip_address", "—"),
                     "lat": float(r["lat"]),
                     "lon": float(r["lon"]),
