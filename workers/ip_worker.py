@@ -9,8 +9,8 @@ Data sources (free, no API key required):
 
 Design notes:
   - Operates strictly on real live network connections.
-  - If lookup fails (invalid IP, network error, rate limit), raises OsintLookupError
-    so caller can display an explicit error message instead of fake data.
+  - Handles private/local IP ranges (192.168.x.x, 10.x.x.x, 127.0.0.1) gracefully.
+  - Supports fetching caller's public WAN IP geolocation via get_public_ip_osint().
 """
 
 import ipaddress
@@ -49,6 +49,15 @@ def _validate_and_resolve_ip(ip_input: str) -> str:
         raise OsintLookupError(f"'{ip_str}' is not a valid IPv4/IPv6 address or resolvable hostname.")
 
 
+def _is_private_ip(ip_str: str) -> bool:
+    """Check if IP address is a non-routable private/local range (e.g. 192.168.x.x, 10.x.x.x, 127.0.0.1)."""
+    try:
+        ip_obj = ipaddress.ip_address(ip_str)
+        return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_reserved
+    except ValueError:
+        return False
+
+
 def _get_reverse_dns(ip_str: str) -> str:
     """Perform PTR / Reverse DNS lookup."""
     try:
@@ -58,12 +67,38 @@ def _get_reverse_dns(ip_str: str) -> str:
         return "—"
 
 
+
+
+
 def run_ip_osint(ip_value: str) -> pd.DataFrame:
     """
     Performs real IP geolocation, location region area, city, timezone, and network lookup.
-    Returns a single-row (or multi-row) pandas DataFrame with live results.
+    Returns a single-row pandas DataFrame with live results.
     """
     ip_target = _validate_and_resolve_ip(ip_value)
+
+    # Handle Private / Local LAN IP ranges gracefully
+    if _is_private_ip(ip_target):
+        reverse_dns = _get_reverse_dns(ip_target)
+        row = {
+            "ip_address": ip_target,
+            "country": "Local Network",
+            "country_code": "LAN",
+            "region_code": "PRIVATE",
+            "region_name": "Private Subnet (RFC 1918)",  # Location Region Area
+            "city": "Local Host",
+            "zip": "—",
+            "lat": 0.0,
+            "lon": 0.0,
+            "timezone": "Local System Time",
+            "isp": "Local Network Interface",
+            "org": "Private LAN Subnet",
+            "as_number": "Non-Routable Private Range",
+            "reverse_dns": reverse_dns,
+            "is_private": True,
+            "discovered_at": datetime.now(),
+        }
+        return pd.DataFrame([row])
 
     try:
         resp = get_with_retry(
@@ -79,6 +114,8 @@ def run_ip_osint(ip_value: str) -> pd.DataFrame:
         data = resp.json()
         if data.get("status") != "success":
             msg = data.get("message", "Unknown error")
+            if msg == "private range":
+                return run_ip_osint(ip_target)  # Re-route to private handler
             raise OsintLookupError(f"IP Geolocation lookup failed: {msg}")
 
         reverse_dns = data.get("reverse") or _get_reverse_dns(ip_target)
@@ -98,6 +135,7 @@ def run_ip_osint(ip_value: str) -> pd.DataFrame:
             "org": data.get("org") or "—",
             "as_number": data.get("as") or "—",
             "reverse_dns": reverse_dns,
+            "is_private": False,
             "discovered_at": datetime.now(),
         }
 

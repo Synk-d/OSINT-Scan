@@ -22,10 +22,15 @@ from datetime import datetime
 from urllib.parse import urlparse
 
 import pandas as pd
+# pyrefly: ignore [missing-import]
 import plotly.express as px
+# pyrefly: ignore [missing-import]
 import streamlit as st
+# pyrefly: ignore [missing-import]
 import streamlit.components.v1 as components
+# pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
+# pyrefly: ignore [missing-import]
 from pyvis.network import Network
 
 from db import repository as repo
@@ -37,7 +42,6 @@ from workers.relationship_engine import generate_auto_relationships
 from workers.user_worker import OsintLookupError as UserLookupError, run_user_osint as _live_user_osint
 
 load_dotenv()
-FORCE_MOCK_DATA = os.getenv("FORCE_MOCK_DATA", "false").lower() == "true"
 
 
 # ----------------------------------------------------------------------------
@@ -734,7 +738,7 @@ with tab3:
         quick_ip = st.text_input("Enter IP Address / Hostname", value="", placeholder="e.g. 8.8.8.8 or 1.1.1.1", key="tab_ip_search", label_visibility="collapsed")
     with quick_col2:
         quick_btn = st.button("GEOLOCATE IP", use_container_width=True, key="btn_quick_ip")
-    
+
     if quick_btn and quick_ip.strip():
         is_valid, err, cleaned_ip = validate_ip_address(quick_ip)
         if not is_valid:

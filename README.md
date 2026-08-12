@@ -58,8 +58,8 @@ app.py                        # Streamlit frontend (unchanged UI, now backend-wi
 workers/
   domain_worker.py            # real: crt.sh + DNS + WHOIS + ip-api
   user_worker.py               # real: GitHub/Reddit/Keybase APIs + existence checks
+  ip_worker.py                 # real: IP Geolocation + Region Area + reverse PTR lookups
   relationship_engine.py      # real: correlation logic (shared IP/email/username/bio)
-  mock_fallback.py            # deterministic mock generators (the fallback layer)
 db/
   schema.sql                   # CREATE TABLE statements (idempotent)
   connection.py                # psycopg2 connection handling + DatabaseUnavailable
