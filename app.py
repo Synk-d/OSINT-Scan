@@ -1,10 +1,9 @@
 """
-OSINT Aggregation & Visualization Dashboard — Frontend + Backend (v0.5.1)
---------------------------------------------------------------------
+OSINT Aggregation & Visualization Dashboard — Multi-Engine Intelligence (v0.7.0)
+-----------------------------------------------------------------------------
 Calls real ingestion workers in workers/ (crt.sh, DNS, WHOIS, IP Geolocation,
-Region Area tracking, GitHub/Reddit/Keybase APIs). Live lookups only — real data only.
-If a lookup fails (no internet, rate-limited, invalid target), the dashboard
-shows an error message and empty results instead of faked data.
+Region Area tracking, Reverse PTR DNS, Multi-Engine Username OSINT across 12+ platforms).
+Live lookups only — real data only.
 
 Successful live sweeps are persisted to PostgreSQL if DB_* env vars point at a
 reachable database (see .env.example) — optional, silently skipped otherwise.
@@ -55,11 +54,10 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------------------------------
-# DESIGN TOKENS
+# DESIGN TOKENS & CSS STYLING
 # ----------------------------------------------------------------------------
 CSS = """
 <style>
-/* Imported Orbitron for a high-tech cybersecurity/logo aesthetic */
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;800;900&family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 :root {
@@ -219,7 +217,8 @@ def init_session_state():
             "registrar", "mx_records", "discovered_at",
         ]),
         "user_df": pd.DataFrame(columns=[
-            "platform", "profile_url", "associated_email", "bio_keywords", "confidence", "discovered_at",
+            "platform", "category", "display_name", "profile_url", "associated_email",
+            "bio_keywords", "followers", "public_repos", "avatar_url", "confidence", "discovered_at",
         ]),
         "ip_df": pd.DataFrame(columns=[
             "ip_address", "country", "country_code", "region_code", "region_name",
@@ -236,6 +235,12 @@ def init_session_state():
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
+
+    # Defensive backfill for any existing user_df in session state
+    if "user_df" in st.session_state and isinstance(st.session_state.user_df, pd.DataFrame):
+        for col in ["category", "display_name", "associated_email", "followers", "public_repos", "avatar_url"]:
+            if col not in st.session_state.user_df.columns:
+                st.session_state.user_df[col] = "—"
 
 init_session_state()
 
@@ -294,7 +299,7 @@ def validate_username(username_value: str) -> tuple[bool, str, str]:
     if len(cleaned) < 2:
         return False, "Username must be at least 2 characters.", ""
     if not re.match(r"^[a-zA-Z0-9_.-]+$", cleaned):
-        return False, f"'{username_value}' contains invalid characters. Use only letters, numbers, dots, underscores, and hyphens.", ""
+        return False, f"'{username_value}' contains invalid characters.", ""
     return True, "", cleaned
 
 
@@ -319,7 +324,7 @@ def run_domain_osint(domain_value: str) -> tuple[pd.DataFrame, str]:
 
 
 def run_user_osint(username_value: str) -> tuple[pd.DataFrame, str]:
-    """Runs real live user sweep."""
+    """Runs real live advanced user sweep across 12+ OSINT engines."""
     return _live_user_osint(username_value), "live"
 
 
@@ -349,7 +354,7 @@ def persist_sweep(domain_val, user_val, ip_val, domain_df, user_df, ip_df, rel_d
 
 
 # ----------------------------------------------------------------------------
-# SIDEBAR
+# SIDEBAR — TARGET INGESTION
 # ----------------------------------------------------------------------------
 with st.sidebar:
     st.markdown("""
@@ -359,16 +364,16 @@ with st.sidebar:
     """, unsafe_allow_html=True)
     
     st.markdown("<div class='section-eyebrow'>Target Ingestion</div>", unsafe_allow_html=True)
-    target_type = st.radio("Target type", ["domain / ip", "user"], horizontal=True, label_visibility="collapsed")
+    target_type = st.radio("Target type", ["Domain / IP", "Username"], horizontal=True, label_visibility="collapsed")
 
-    if target_type == "domain / ip":
+    if target_type == "Domain / IP":
         target_value = st.text_input(
-            "Domain / IP Address", value="", placeholder="example.com or 8.8.8.8",
+            "Target Domain or IP Address", value="", placeholder="e.g. example.com or 8.8.8.8",
             key="domain_ip_input", label_visibility="collapsed",
         )
     else:
         target_value = st.text_input(
-            "Username", value="", placeholder="username",
+            "Target Username", value="", placeholder="e.g. torvalds or sneyank",
             key="user_input", label_visibility="collapsed",
         )
 
@@ -388,7 +393,7 @@ with st.sidebar:
         st.session_state.history.insert(0, {
             "time": datetime.now().strftime("%H:%M:%S"),
             "type": target_type,
-            "target": target_value
+            "target": target_value.strip()
         })
         st.session_state.history = st.session_state.history[:10]
 
@@ -396,7 +401,7 @@ with st.sidebar:
         st.markdown("<p style='color:var(--text-dim); font-size:0.75rem; font-style:italic;'>No recent sweeps found.</p>", unsafe_allow_html=True)
     else:
         for item in st.session_state.history:
-            icon = "👤" if item["type"] == "user" else "🌐"
+            icon = "👤" if item["type"] == "Username" else "🌐"
             st.markdown(f"""
             <div class="history-item">
                 <span class="target">{icon} &nbsp; {item['target']}</span>
@@ -410,9 +415,9 @@ with st.sidebar:
 # ----------------------------------------------------------------------------
 if sweep and target_value.strip():
     st.session_state.failures = {}
-    
-    if target_type == "domain / ip":
-        raw_val = target_value.strip()
+    raw_val = target_value.strip()
+
+    if target_type == "Domain / IP":
         is_ip = False
         try:
             ipaddress.ip_address(raw_val)
@@ -449,20 +454,20 @@ if sweep and target_value.strip():
                 except Exception as e:
                     st.error(f"❌ Domain lookup failed: {e}")
 
-    else:  # user
-        is_valid, error_msg, cleaned_val = validate_username(target_value)
+    else:  # Username
+        is_valid, error_msg, cleaned_val = validate_username(raw_val)
         if not is_valid:
             st.error(f"❌ {error_msg}")
         else:
             st.session_state.user_val = cleaned_val
             try:
-                with st.spinner(f"Sweeping @{cleaned_val} — checking live sources…"):
+                with st.spinner(f"Sweeping @{cleaned_val} across 12+ public OSINT platforms…"):
                     df, src = run_user_osint(st.session_state.user_val)
                     st.session_state.user_df = df
                     st.session_state.data_source["user"] = src
                 st.session_state.user_swept = True
             except Exception as e:
-                st.error(f"❌ User lookup failed: {e}")
+                st.error(f"❌ Username footprinting failed: {e}")
 
     if st.session_state.domain_swept and st.session_state.user_swept:
         try:
@@ -472,7 +477,7 @@ if sweep and target_value.strip():
             )
         except Exception as e:
             st.session_state.failures["relationships"] = str(e)
-    
+
     persist_sweep(
         st.session_state.domain_val, st.session_state.user_val, st.session_state.ip_val,
         st.session_state.domain_df, st.session_state.user_df, st.session_state.ip_df,
@@ -535,43 +540,6 @@ st.markdown(f"""
 
 
 # ----------------------------------------------------------------------------
-# TOP METRICS
-# ----------------------------------------------------------------------------
-domain_ips = domain_df[domain_df["ip_address"] != "—"]["ip_address"].tolist() if not domain_df.empty else []
-direct_ips = ip_df["ip_address"].tolist() if not ip_df.empty else []
-total_unique_ips = len(set(domain_ips + direct_ips))
-
-c1, c2, c3, c4, c5 = st.columns(5)
-metrics = [
-    (c1, "Subdomains Found", len(domain_df), "", ""),
-    (c2, "Platform Hits", len(user_df), "alt", ""),
-    (c3, "Tracked IP Locations", total_unique_ips, "purple", ""),
-    (c4, "Entity Links", len(rel_df), "alt", ""),
-    (c5, "High-Confidence Links", int((rel_df["confidence_score"] >= 80).sum()) if not rel_df.empty else 0, "danger", ""),
-]
-for col, label, value, cls, delta in metrics:
-    with col:
-        st.markdown(f"""
-        <div class="metric-card {cls}">
-            <div class="metric-label">{label}</div>
-            <div class="metric-value">{value}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-
-def style_fig(fig, height=380):
-    fig.update_layout(
-        paper_bgcolor="#12171C", plot_bgcolor="#12171C",
-        font=dict(family="IBM Plex Mono", color="#C9D3D6", size=12),
-        margin=dict(l=10, r=10, t=30, b=10), height=height,
-        legend=dict(bgcolor="rgba(0,0,0,0)"),
-    )
-    fig.update_xaxes(gridcolor="#223038", zerolinecolor="#223038")
-    fig.update_yaxes(gridcolor="#223038", zerolinecolor="#223038")
-    return fig
-
-
-# ----------------------------------------------------------------------------
 # COMBINED INFRASTRUCTURE & IP DATA AGGREGATION
 # ----------------------------------------------------------------------------
 infra_records = []
@@ -617,12 +585,51 @@ combined_infra_df = pd.DataFrame(infra_records)
 
 
 # ----------------------------------------------------------------------------
+# TOP METRICS CARDS
+# ----------------------------------------------------------------------------
+domain_ips = domain_df[domain_df["ip_address"] != "—"]["ip_address"].tolist() if not domain_df.empty else []
+direct_ips = ip_df["ip_address"].tolist() if not ip_df.empty else []
+total_unique_ips = len(set(domain_ips + direct_ips))
+unique_isps = len(set(combined_infra_df["isp"])) if not combined_infra_df.empty else 0
+high_conf_users = len(user_df[user_df["confidence"] >= 90]) if not user_df.empty else 0
+
+c1, c2, c3, c4, c5 = st.columns(5)
+metrics = [
+    (c1, "Subdomains Found", len(domain_df), "", ""),
+    (c2, "Tracked IP Locations", total_unique_ips, "alt", ""),
+    (c3, "ISPs & Networks", unique_isps, "purple", ""),
+    (c4, "Verified Profile Hits", len(user_df), "alt", ""),
+    (c5, "High-Confidence Hits", high_conf_users, "danger", ""),
+]
+for col, label, value, cls, delta in metrics:
+    with col:
+        st.markdown(f"""
+        <div class="metric-card {cls}">
+            <div class="metric-label">{label}</div>
+            <div class="metric-value">{value}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+def style_fig(fig, height=380):
+    fig.update_layout(
+        paper_bgcolor="#12171C", plot_bgcolor="#12171C",
+        font=dict(family="IBM Plex Mono", color="#C9D3D6", size=12),
+        margin=dict(l=10, r=10, t=30, b=10), height=height,
+        legend=dict(bgcolor="rgba(0,0,0,0)"),
+    )
+    fig.update_xaxes(gridcolor="#223038", zerolinecolor="#223038")
+    fig.update_yaxes(gridcolor="#223038", zerolinecolor="#223038")
+    return fig
+
+
+# ----------------------------------------------------------------------------
 # TABS
 # ----------------------------------------------------------------------------
 tab1, tab2, tab3 = st.tabs([
     "Infrastructure & IP Geolocation",
-    "Identity Footprinting",
-    "Entity Link Graph"
+    "Identity Footprinting & User OSINT",
+    "Topology & Link Graph"
 ])
 
 # ---- TAB 1: Infrastructure & IP Geolocation ------------------------------
@@ -632,8 +639,6 @@ with tab1:
     if "ip" in st.session_state.failures:
         st.warning(f"⚠️ IP lookup warning: {st.session_state.failures['ip']}")
 
-
-    
     # Render location highlight cards if data is available
     if not combined_infra_df.empty:
         primary_row = combined_infra_df.iloc[0]
@@ -725,27 +730,141 @@ with tab1:
         cols = [c for c in ["target_label", "ip_address", "city", "region_name", "country", "isp", "registrar", "mx_records", "discovered_at"] if c in combined_infra_df.columns]
         st.dataframe(combined_infra_df[cols], width='stretch', hide_index=True)
     else:
-        st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No infrastructure or IP sweep data yet. Select Domain or IP in the left sidebar and click START.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No infrastructure or IP sweep data yet. Enter a Domain or IP in the left sidebar and click START.</p>", unsafe_allow_html=True)
 
 
+# ---- TAB 2: Identity Footprinting & User OSINT ---------------------------
+with tab2:
+    if "user" in st.session_state.failures:
+        st.warning(f"⚠️ User lookup warning: {st.session_state.failures['user']}")
+    
+    if not user_df.empty:
+        # Display 5 Key Highlights Cards for User OSINT
+        u1, u2, u3, u4, u5 = st.columns(5)
+        total_hits = len(user_df)
+        high_conf = len(user_df[user_df["confidence"] >= 90])
+        emails_found = len(user_df[user_df["associated_email"].notna() & (user_df["associated_email"] != "—")])
+        
+        all_kws = []
+        for _, r in user_df.iterrows():
+            if isinstance(r.get("bio_keywords"), list):
+                all_kws.extend(r["bio_keywords"])
+        
+        with u1:
+            st.markdown(f"""
+            <div class="metric-card alt">
+                <div class="metric-label">Target Handle</div>
+                <div class="metric-value" style="font-size:1.3rem;">@{user_val}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with u2:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Verified Platforms</div>
+                <div class="metric-value" style="font-size:1.3rem;">{total_hits} / 12+</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with u3:
+            st.markdown(f"""
+            <div class="metric-card purple">
+                <div class="metric-label">High-Confidence</div>
+                <div class="metric-value" style="font-size:1.3rem;">{high_conf}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with u4:
+            st.markdown(f"""
+            <div class="metric-card alt">
+                <div class="metric-label">Public Emails</div>
+                <div class="metric-value" style="font-size:1.3rem;">{emails_found}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with u5:
+            st.markdown(f"""
+            <div class="metric-card danger">
+                <div class="metric-label">Extracted Keywords</div>
+                <div class="metric-value" style="font-size:1.3rem;">{len(all_kws)}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-# ---- TAB 3: Entity Link Graph --------------------------------------------
+    left, right = st.columns([1, 1])
+
+    with left:
+        st.markdown("<div class='section-eyebrow'>Platform Detection & Confidence Matrix</div>", unsafe_allow_html=True)
+        if not user_df.empty:
+            pf = user_df.copy()
+            for c in ["display_name", "category", "confidence"]:
+                if c not in pf.columns:
+                    pf[c] = "—" if c != "confidence" else 80
+            pf = pf.sort_values("confidence", ascending=True)
+            fig_pf = px.bar(
+                pf, x="confidence", y="platform", orientation="h",
+                color="confidence", color_continuous_scale=["#223038", "#4FD9C9", "#F0A63A"],
+                hover_data={"display_name": True, "category": True, "confidence": True},
+            )
+            fig_pf.update_coloraxes(showscale=False)
+            fig_pf.update_layout(xaxis_title="Confidence Rating (%)", yaxis_title="")
+            st.plotly_chart(style_fig(fig_pf, height=360))
+        else:
+            st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No identity footprint data yet. Select Username in the left sidebar and click START.</p>", unsafe_allow_html=True)
+
+    with right:
+        st.markdown("<div class='section-eyebrow'>Bio Keyword & Interest Cloud</div>", unsafe_allow_html=True)
+        kw_rows = []
+        if not user_df.empty:
+            for _, r in user_df.iterrows():
+                if isinstance(r.get("bio_keywords"), list):
+                    for kw in r["bio_keywords"]:
+                        kw_rows.append(kw)
+        kw_df = pd.Series(kw_rows).value_counts().reset_index() if kw_rows else pd.DataFrame()
+        if not kw_df.empty:
+            kw_df.columns = ["keyword", "count"]
+            rng = _seed(user_val + "bubble")
+            kw_df["x"] = [rng.uniform(0, 10) for _ in range(len(kw_df))]
+            kw_df["y"] = [rng.uniform(0, 10) for _ in range(len(kw_df))]
+            fig_bubble = px.scatter(
+                kw_df, x="x", y="y", size="count", text="keyword", size_max=55,
+                color="count", color_continuous_scale=["#223038", "#A855F7", "#F0A63A"],
+            )
+            fig_bubble.update_traces(textposition="middle center", textfont=dict(color="#F2F5F5", size=11, family="Space Grotesk"))
+            fig_bubble.update_coloraxes(showscale=False)
+            fig_bubble.update_xaxes(visible=False)
+            fig_bubble.update_yaxes(visible=False)
+            st.plotly_chart(style_fig(fig_bubble, height=360))
+        else:
+            st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No bio keywords extracted.</p>", unsafe_allow_html=True)
+
+    st.markdown("<div class='section-eyebrow'>Verified Platform Hits & OSINT Footprint Register</div>", unsafe_allow_html=True)
+    if not user_df.empty:
+        show_u = user_df.copy()
+        show_u["bio_keywords"] = show_u["bio_keywords"].apply(lambda x: ", ".join(x) if isinstance(x, list) else str(x))
+        show_u["associated_email"] = show_u["associated_email"].fillna("—")
+        
+        display_cols = [c for c in ["platform", "category", "display_name", "profile_url", "associated_email", "confidence", "bio_keywords"] if c in show_u.columns]
+        st.dataframe(
+            show_u[display_cols],
+            width='stretch', hide_index=True,
+        )
+    else:
+        st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No user sweep data available. Ingest a username from the sidebar.</p>", unsafe_allow_html=True)
+
+
+# ---- TAB 3: Topology & Link Graph ----------------------------------------
 with tab3:
     if "relationships" in st.session_state.failures:
         st.warning(f"⚠️ Relationship analysis warning: {st.session_state.failures['relationships']}")
-    
-    st.markdown("<div class='section-eyebrow'>Cross-Entity Correlation Topology</div>", unsafe_allow_html=True)
+
+    st.markdown("<div class='section-eyebrow'>Infrastructure & Identity Topology Correlation</div>", unsafe_allow_html=True)
     physics_on = st.toggle("Enable physics engine", value=True)
 
-    net = Network(height="520px", width="100%", bgcolor="#0A0D10", font_color="#C9D3D6", directed=False)
+    net = Network(height="540px", width="100%", bgcolor="#0A0D10", font_color="#C9D3D6", directed=False)
     if domain_val:
-        net.add_node(domain_val, label=domain_val, color="#4FD9C9", shape="dot", size=26, title="Domain (root)")
+        net.add_node(domain_val, label=domain_val, color="#4FD9C9", shape="dot", size=28, title="Domain (root)")
     if user_val:
-        net.add_node(user_val, label=f"@{user_val}", color="#3AD65B", shape="dot", size=26, title="Username (root)")
+        net.add_node(user_val, label=f"@{user_val}", color="#3AD65B", shape="dot", size=28, title="Username (root)")
     if ip_val:
-        net.add_node(ip_val, label=f"📍 {ip_val}", color="#A855F7", shape="dot", size=26, title="IP Target (root)")
+        net.add_node(ip_val, label=f"📍 {ip_val}", color="#A855F7", shape="dot", size=28, title="IP Target (root)")
 
-    for _, r in domain_df.head(6).iterrows():
+    for _, r in domain_df.head(10).iterrows():
         net.add_node(r["subdomain"], color="#4FD9C9", shape="dot", size=14, title=r["ip_address"])
         net.add_node(r["ip_address"], color="#E8544B", shape="dot", size=10, title="Resolved IP")
         if domain_val:
@@ -755,17 +874,19 @@ with tab3:
     if not ip_df.empty:
         for _, r in ip_df.iterrows():
             if ip_val:
-                net.add_node(r["isp"], color="#A855F7", shape="dot", size=14, title=r["as_number"])
+                net.add_node(r["isp"], color="#A855F7", shape="dot", size=16, title=r.get("as_number", "ISP"))
                 net.add_edge(ip_val, r["isp"])
 
-    for _, r in user_df.iterrows():
-        net.add_node(r["platform"], color="#3AD65B", shape="dot", size=14, title=r["profile_url"])
-        if user_val:
-            net.add_edge(user_val, r["platform"])
+    if not user_df.empty:
+        for _, r in user_df.iterrows():
+            net.add_node(r["platform"], color="#3AD65B", shape="dot", size=14, title=r["profile_url"])
+            if user_val:
+                net.add_edge(user_val, r["platform"])
 
-    for _, r in rel_df.iterrows():
-        if r["source"] in net.get_nodes() and r["target"] in net.get_nodes():
-            net.add_edge(r["source"], r["target"], color="#F0A63A", title=f"{r['relationship_type']} ({r['confidence_score']}%)", dashes=True)
+    if not rel_df.empty:
+        for _, r in rel_df.iterrows():
+            if r["source"] in net.get_nodes() and r["target"] in net.get_nodes():
+                net.add_edge(r["source"], r["target"], color="#F0A63A", title=f"{r['relationship_type']} ({r['confidence_score']}%)", dashes=True)
 
     net.toggle_physics(physics_on)
     net.set_edge_smooth("dynamic")
@@ -773,7 +894,7 @@ with tab3:
     net.write_html(html_path)
     with open(html_path, "r", encoding="utf-8") as f:
         graph_html = f.read()
-    components.html(graph_html, height=540, scrolling=False)
+    components.html(graph_html, height=560, scrolling=False)
 
     st.markdown("<div class='section-eyebrow'>Relationship Register</div>", unsafe_allow_html=True)
     if rel_df.empty:
