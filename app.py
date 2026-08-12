@@ -359,22 +359,17 @@ with st.sidebar:
     """, unsafe_allow_html=True)
     
     st.markdown("<div class='section-eyebrow'>Target Ingestion</div>", unsafe_allow_html=True)
-    target_type = st.radio("Target type", ["domain", "user", "ip"], horizontal=True, label_visibility="collapsed")
+    target_type = st.radio("Target type", ["domain / ip", "user"], horizontal=True, label_visibility="collapsed")
 
-    if target_type == "domain":
+    if target_type == "domain / ip":
         target_value = st.text_input(
-            "Domain", value="", placeholder="example.com",
-            key="domain_input", label_visibility="collapsed",
-        )
-    elif target_type == "user":
-        target_value = st.text_input(
-            "Username", value="", placeholder="username",
-            key="user_input", label_visibility="collapsed",
+            "Domain / IP Address", value="", placeholder="example.com or 8.8.8.8",
+            key="domain_ip_input", label_visibility="collapsed",
         )
     else:
         target_value = st.text_input(
-            "IP Address", value="", placeholder="8.8.8.8",
-            key="ip_input", label_visibility="collapsed",
+            "Username", value="", placeholder="username",
+            key="user_input", label_visibility="collapsed",
         )
 
     sweep = st.button("START", use_container_width=True)
@@ -401,7 +396,7 @@ with st.sidebar:
         st.markdown("<p style='color:var(--text-dim); font-size:0.75rem; font-style:italic;'>No recent sweeps found.</p>", unsafe_allow_html=True)
     else:
         for item in st.session_state.history:
-            icon = "🌐" if item["type"] == "domain" else ("👤" if item["type"] == "user" else "📍")
+            icon = "👤" if item["type"] == "user" else "🌐"
             st.markdown(f"""
             <div class="history-item">
                 <span class="target">{icon} &nbsp; {item['target']}</span>
@@ -416,22 +411,45 @@ with st.sidebar:
 if sweep and target_value.strip():
     st.session_state.failures = {}
     
-    if target_type == "domain":
-        is_valid, error_msg, cleaned_val = validate_domain(target_value)
-        if not is_valid:
-            st.error(f"❌ {error_msg}")
-        else:
-            st.session_state.domain_val = cleaned_val
-            try:
-                with st.spinner(f"Sweeping {cleaned_val} — live lookups in progress…"):
-                    df, src = run_domain_osint(st.session_state.domain_val)
-                    st.session_state.domain_df = df
-                    st.session_state.data_source["domain"] = src
-                st.session_state.domain_swept = True
-            except Exception as e:
-                st.error(f"❌ Domain lookup failed: {e}")
+    if target_type == "domain / ip":
+        raw_val = target_value.strip()
+        is_ip = False
+        try:
+            ipaddress.ip_address(raw_val)
+            is_ip = True
+        except ValueError:
+            pass
 
-    elif target_type == "user":
+        if is_ip:
+            is_valid, error_msg, cleaned_val = validate_ip_address(raw_val)
+            if not is_valid:
+                st.error(f"❌ {error_msg}")
+            else:
+                st.session_state.ip_val = cleaned_val
+                try:
+                    with st.spinner(f"Geolocating {cleaned_val} — fetching live region area & network data…"):
+                        df, src = run_ip_osint(st.session_state.ip_val)
+                        st.session_state.ip_df = df
+                        st.session_state.data_source["ip"] = src
+                    st.session_state.ip_swept = True
+                except Exception as e:
+                    st.error(f"❌ IP Geolocation failed: {e}")
+        else:
+            is_valid, error_msg, cleaned_val = validate_domain(raw_val)
+            if not is_valid:
+                st.error(f"❌ {error_msg}")
+            else:
+                st.session_state.domain_val = cleaned_val
+                try:
+                    with st.spinner(f"Sweeping {cleaned_val} — live lookups in progress…"):
+                        df, src = run_domain_osint(st.session_state.domain_val)
+                        st.session_state.domain_df = df
+                        st.session_state.data_source["domain"] = src
+                    st.session_state.domain_swept = True
+                except Exception as e:
+                    st.error(f"❌ Domain lookup failed: {e}")
+
+    else:  # user
         is_valid, error_msg, cleaned_val = validate_username(target_value)
         if not is_valid:
             st.error(f"❌ {error_msg}")
@@ -445,21 +463,6 @@ if sweep and target_value.strip():
                 st.session_state.user_swept = True
             except Exception as e:
                 st.error(f"❌ User lookup failed: {e}")
-
-    else:  # ip
-        is_valid, error_msg, cleaned_val = validate_ip_address(target_value)
-        if not is_valid:
-            st.error(f"❌ {error_msg}")
-        else:
-            st.session_state.ip_val = cleaned_val
-            try:
-                with st.spinner(f"Geolocating {cleaned_val} — fetching live region area & network data…"):
-                    df, src = run_ip_osint(st.session_state.ip_val)
-                    st.session_state.ip_df = df
-                    st.session_state.data_source["ip"] = src
-                st.session_state.ip_swept = True
-            except Exception as e:
-                st.error(f"❌ IP Geolocation failed: {e}")
 
     if st.session_state.domain_swept and st.session_state.user_swept:
         try:
@@ -583,6 +586,9 @@ if not domain_df.empty:
             "city": r.get("city", "—"),
             "lat": float(r.get("lat", 0.0)),
             "lon": float(r.get("lon", 0.0)),
+            "timezone": "—",
+            "as_number": "—",
+            "reverse_dns": "—",
             "registrar": r.get("registrar", "—"),
             "mx_records": ", ".join(r["mx_records"]) if isinstance(r.get("mx_records"), list) else str(r.get("mx_records", "")),
             "discovered_at": r.get("discovered_at"),
@@ -599,6 +605,9 @@ if not ip_df.empty:
             "city": r.get("city", "—"),
             "lat": float(r.get("lat", 0.0)),
             "lon": float(r.get("lon", 0.0)),
+            "timezone": r.get("timezone", "—"),
+            "as_number": r.get("as_number", "—"),
+            "reverse_dns": r.get("reverse_dns", "—"),
             "registrar": r.get("as_number", "—"),
             "mx_records": f"PTR: {r.get('reverse_dns', '—')}",
             "discovered_at": r.get("discovered_at"),
@@ -610,29 +619,61 @@ combined_infra_df = pd.DataFrame(infra_records)
 # ----------------------------------------------------------------------------
 # TABS
 # ----------------------------------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs([
-    "Infrastructure & IP Analytics",
+tab1, tab2, tab3 = st.tabs([
+    "Infrastructure & IP Geolocation",
     "Identity Footprinting",
-    "IP Geolocation & Region",
     "Entity Link Graph"
 ])
 
-# ---- TAB 1: Infrastructure & IP Analytics --------------------------------
+# ---- TAB 1: Infrastructure & IP Geolocation ------------------------------
 with tab1:
     if "domain" in st.session_state.failures:
         st.warning(f"⚠️ Domain lookup warning: {st.session_state.failures['domain']}")
     if "ip" in st.session_state.failures:
         st.warning(f"⚠️ IP lookup warning: {st.session_state.failures['ip']}")
 
-    # If IP scan was run, show prominent summary alert
-    if ip_swept and not ip_df.empty:
-        r0 = ip_df.iloc[0]
-        st.success(
-            f"📍 **IP Target Scanned**: `{r0['ip_address']}` | "
-            f"**Location Region Area**: {r0['region_name']}, {r0['city']} ({r0['country']}) | "
-            f"**ISP**: {r0['isp']} | **ASN**: {r0['as_number']} | **Reverse DNS**: {r0['reverse_dns']}"
-        )
+
     
+    # Render location highlight cards if data is available
+    if not combined_infra_df.empty:
+        primary_row = combined_infra_df.iloc[0]
+        k1, k2, k3, k4, k5 = st.columns(5)
+        with k1:
+            st.markdown(f"""
+            <div class="metric-card alt">
+                <div class="metric-label">Target IP / Host</div>
+                <div class="metric-value" style="font-size:1.1rem; overflow:hidden; text-overflow:ellipsis;">{primary_row['ip_address']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with k2:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Location Region Area</div>
+                <div class="metric-value" style="font-size:1.1rem;">{primary_row['region_name']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with k3:
+            st.markdown(f"""
+            <div class="metric-card alt">
+                <div class="metric-label">City / Country</div>
+                <div class="metric-value" style="font-size:1.1rem;">{primary_row['city']}, {primary_row['country']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with k4:
+            st.markdown(f"""
+            <div class="metric-card purple">
+                <div class="metric-label">ISP / Network</div>
+                <div class="metric-value" style="font-size:1.0rem; overflow:hidden; text-overflow:ellipsis;">{primary_row['isp']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with k5:
+            st.markdown(f"""
+            <div class="metric-card alt">
+                <div class="metric-label">Timezone</div>
+                <div class="metric-value" style="font-size:1.1rem;">{primary_row.get('timezone', '—')}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
     left, right = st.columns([1, 1.3])
 
     with left:
@@ -647,228 +688,49 @@ with tab1:
         fig_bar = px.bar(isp_counts, x="count", y="isp", orientation="h",
                           color_discrete_sequence=["#F0A63A"])
         fig_bar.update_traces(marker_line_width=0)
-        st.plotly_chart(style_fig(fig_bar))
+        st.plotly_chart(style_fig(fig_bar, height=210))
+
+        st.markdown("<div class='section-eyebrow'>Location Region Area Breakdown</div>", unsafe_allow_html=True)
+        if not combined_infra_df.empty:
+            region_counts = combined_infra_df["region_name"].value_counts().reset_index()
+            region_counts.columns = ["region_name", "count"]
+        else:
+            region_counts = pd.DataFrame({"region_name": [], "count": []})
+
+        fig_reg = px.bar(
+            region_counts, x="count", y="region_name", orientation="h",
+            color="count", color_continuous_scale=["#223038", "#A855F7", "#4FD9C9"]
+        )
+        fig_reg.update_coloraxes(showscale=False)
+        fig_reg.update_layout(xaxis_title="Count", yaxis_title="")
+        st.plotly_chart(style_fig(fig_reg, height=210))
 
     with right:
-        st.markdown("<div class='section-eyebrow'>Resolved IP Geolocation</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-eyebrow'>Interactive Geolocation Map</div>", unsafe_allow_html=True)
         geo_df = combined_infra_df[(combined_infra_df["lat"] != 0.0) | (combined_infra_df["lon"] != 0.0)] if not combined_infra_df.empty else pd.DataFrame()
         if geo_df.empty:
             geo_df = pd.DataFrame({"lat": [], "lon": [], "target_label": [], "ip_address": [], "isp": [], "region_name": [], "city": [], "country": []})
         
         fig_map = px.scatter_map(
             geo_df, lat="lat", lon="lon", hover_name="target_label",
-            hover_data={"ip_address": True, "isp": True, "region_name": True, "city": True, "lat": False, "lon": False},
+            hover_data={"ip_address": True, "isp": True, "region_name": True, "city": True, "country": True, "lat": False, "lon": False},
             color_discrete_sequence=["#4FD9C9"], zoom=1,
         )
         fig_map.update_traces(marker=dict(size=14))
         fig_map.update_layout(map_style="carto-darkmatter")
-        st.plotly_chart(style_fig(fig_map, height=380))
+        st.plotly_chart(style_fig(fig_map, height=480))
 
-    st.markdown("<div class='section-eyebrow'>Subdomain & IP Region Register</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-eyebrow'>Subdomain, IP Location & Region Register</div>", unsafe_allow_html=True)
     if not combined_infra_df.empty:
         cols = [c for c in ["target_label", "ip_address", "city", "region_name", "country", "isp", "registrar", "mx_records", "discovered_at"] if c in combined_infra_df.columns]
         st.dataframe(combined_infra_df[cols], width='stretch', hide_index=True)
     else:
-        st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No infrastructure or IP sweep data yet. Select Domain or IP in the sidebar and click START.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No infrastructure or IP sweep data yet. Select Domain or IP in the left sidebar and click START.</p>", unsafe_allow_html=True)
 
 
-# ---- TAB 2: Identity Footprinting ---------------------------------------
-with tab2:
-    if "user" in st.session_state.failures:
-        st.warning(f"⚠️ User lookup warning: {st.session_state.failures['user']}")
-    
-    left, right = st.columns([1, 1])
 
-    with left:
-        st.markdown("<div class='section-eyebrow'>Platform Detection Matrix</div>", unsafe_allow_html=True)
-        if not user_df.empty:
-            pf = user_df.sort_values("confidence", ascending=True)
-            fig_pf = px.bar(pf, x="confidence", y="platform", orientation="h",
-                             color="confidence", color_continuous_scale=["#223038", "#4FD9C9", "#F0A63A"])
-            fig_pf.update_coloraxes(showscale=False)
-            fig_pf.update_layout(xaxis_title="confidence score", yaxis_title="")
-            st.plotly_chart(style_fig(fig_pf))
-        else:
-            st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No identity footprint data yet.</p>", unsafe_allow_html=True)
-
-    with right:
-        st.markdown("<div class='section-eyebrow'>Bio Keyword Trends</div>", unsafe_allow_html=True)
-        kw_rows = []
-        if not user_df.empty:
-            for _, r in user_df.iterrows():
-                if isinstance(r.get("bio_keywords"), list):
-                    for kw in r["bio_keywords"]:
-                        kw_rows.append(kw)
-        kw_df = pd.Series(kw_rows).value_counts().reset_index() if kw_rows else pd.DataFrame()
-        if not kw_df.empty:
-            kw_df.columns = ["keyword", "count"]
-            rng = _seed(user_val + "bubble")
-            kw_df["x"] = [rng.uniform(0, 10) for _ in range(len(kw_df))]
-            kw_df["y"] = [rng.uniform(0, 10) for _ in range(len(kw_df))]
-            fig_bubble = px.scatter(
-                kw_df, x="x", y="y", size="count", text="keyword", size_max=60,
-                color="count", color_continuous_scale=["#223038", "#F0A63A"],
-            )
-            fig_bubble.update_traces(textposition="middle center", textfont=dict(color="#0A0D10", size=10))
-            fig_bubble.update_coloraxes(showscale=False)
-            fig_bubble.update_xaxes(visible=False)
-            fig_bubble.update_yaxes(visible=False)
-            st.plotly_chart(style_fig(fig_bubble))
-        else:
-            st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No bio keywords found.</p>", unsafe_allow_html=True)
-
-    st.markdown("<div class='section-eyebrow'>Verified Profile Hits</div>", unsafe_allow_html=True)
-    if not user_df.empty:
-        show_u = user_df.copy()
-        show_u["bio_keywords"] = show_u["bio_keywords"].apply(lambda x: ", ".join(x) if isinstance(x, list) else str(x))
-        show_u["associated_email"] = show_u["associated_email"].fillna("— masked / not found —")
-        st.dataframe(
-            show_u[["platform", "profile_url", "associated_email", "confidence", "bio_keywords"]],
-            width='stretch', hide_index=True,
-        )
-    else:
-        st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No user sweep data yet. Enter a username in the sidebar and click START.</p>", unsafe_allow_html=True)
-
-
-# ---- TAB 3: IP Geolocation & Location Region Area Tracker --------------
+# ---- TAB 3: Entity Link Graph --------------------------------------------
 with tab3:
-    st.markdown("<div class='section-eyebrow'>Interactive Direct IP Lookup</div>", unsafe_allow_html=True)
-    quick_col1, quick_col2 = st.columns([3, 1])
-    with quick_col1:
-        quick_ip = st.text_input("Enter IP Address / Hostname", value="", placeholder="e.g. 8.8.8.8 or 1.1.1.1", key="tab_ip_search", label_visibility="collapsed")
-    with quick_col2:
-        quick_btn = st.button("GEOLOCATE IP", use_container_width=True, key="btn_quick_ip")
-
-    if quick_btn and quick_ip.strip():
-        is_valid, err, cleaned_ip = validate_ip_address(quick_ip)
-        if not is_valid:
-            st.error(f"❌ {err}")
-        else:
-            try:
-                with st.spinner(f"Geolocating {cleaned_ip} live…"):
-                    df_q, _ = run_ip_osint(cleaned_ip)
-                    st.session_state.ip_val = cleaned_ip
-                    st.session_state.ip_df = df_q
-                    st.session_state.ip_swept = True
-                    st.rerun()
-            except Exception as exc:
-                st.error(f"❌ IP Lookup failed: {exc}")
-
-    # Gather all available IP records from both direct IP sweeps and domain subdomains
-    all_ip_records = []
-    if not ip_df.empty:
-        for _, r in ip_df.iterrows():
-            all_ip_records.append({
-                "target_or_host": f"IP: {r['ip_address']}",
-                "ip_address": r["ip_address"],
-                "city": r.get("city", "—"),
-                "region_name": r.get("region_name", "—"),
-                "country": r.get("country", "—"),
-                "lat": float(r.get("lat", 0.0)),
-                "lon": float(r.get("lon", 0.0)),
-                "isp": r.get("isp", "—"),
-                "as_number": r.get("as_number", "—"),
-                "timezone": r.get("timezone", "—"),
-                "reverse_dns": r.get("reverse_dns", "—"),
-                "discovered_at": r.get("discovered_at"),
-            })
-    
-    if not domain_df.empty:
-        for _, r in domain_df.iterrows():
-            if r["ip_address"] not in ["—", "Unresolved", "Unavailable"] and (r["lat"] != 0.0 or r["lon"] != 0.0):
-                all_ip_records.append({
-                    "target_or_host": r["subdomain"],
-                    "ip_address": r["ip_address"],
-                    "city": r.get("city", "—"),
-                    "region_name": r.get("region_name", "—"),
-                    "country": r.get("country", "—"),
-                    "lat": float(r.get("lat", 0.0)),
-                    "lon": float(r.get("lon", 0.0)),
-                    "isp": r.get("isp", "—"),
-                    "as_number": "—",
-                    "timezone": "—",
-                    "reverse_dns": "—",
-                    "discovered_at": r.get("discovered_at"),
-                })
-    
-    combined_ip_df = pd.DataFrame(all_ip_records)
-
-    if combined_ip_df.empty:
-        st.info("ℹ️ No IP location data available yet. Enter an IP address above or run a Domain/IP sweep in the sidebar.")
-    else:
-        # Display Location & Region Key Highlights Cards
-        primary_row = combined_ip_df.iloc[0]
-        k1, k2, k3, k4, k5 = st.columns(5)
-        with k1:
-            st.markdown(f"""
-            <div class="metric-card alt">
-                <div class="metric-label">Target IP</div>
-                <div class="metric-value" style="font-size:1.3rem;">{primary_row['ip_address']}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with k2:
-            st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">Location Region Area</div>
-                <div class="metric-value" style="font-size:1.3rem;">{primary_row['region_name']}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with k3:
-            st.markdown(f"""
-            <div class="metric-card alt">
-                <div class="metric-label">City / Country</div>
-                <div class="metric-value" style="font-size:1.3rem;">{primary_row['city']}, {primary_row['country']}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with k4:
-            st.markdown(f"""
-            <div class="metric-card purple">
-                <div class="metric-label">ISP / Network</div>
-                <div class="metric-value" style="font-size:1.1rem; overflow:hidden; text-overflow:ellipsis;">{primary_row['isp']}</div>
-            </div>
-            """, unsafe_allow_html=True)
-        with k5:
-            st.markdown(f"""
-            <div class="metric-card alt">
-                <div class="metric-label">Timezone</div>
-                <div class="metric-value" style="font-size:1.1rem;">{primary_row['timezone']}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        map_col, chart_col = st.columns([1.3, 1])
-
-        with map_col:
-            st.markdown("<div class='section-eyebrow'>Interactive Regional Location Map</div>", unsafe_allow_html=True)
-            fig_ip_map = px.scatter_map(
-                combined_ip_df, lat="lat", lon="lon", hover_name="target_or_host",
-                hover_data={"ip_address": True, "region_name": True, "city": True, "country": True, "isp": True, "lat": False, "lon": False},
-                color_discrete_sequence=["#F0A63A"], zoom=2,
-            )
-            fig_ip_map.update_traces(marker=dict(size=14))
-            fig_ip_map.update_layout(map_style="carto-darkmatter")
-            st.plotly_chart(style_fig(fig_ip_map, height=390))
-
-        with chart_col:
-            st.markdown("<div class='section-eyebrow'>Location Region Area Breakdown</div>", unsafe_allow_html=True)
-            region_counts = combined_ip_df["region_name"].value_counts().reset_index()
-            region_counts.columns = ["region_name", "count"]
-            fig_reg = px.bar(
-                region_counts, x="count", y="region_name", orientation="h",
-                color="count", color_continuous_scale=["#223038", "#A855F7", "#4FD9C9"]
-            )
-            fig_reg.update_coloraxes(showscale=False)
-            fig_reg.update_layout(xaxis_title="Tracked IPs", yaxis_title="Region Area")
-            st.plotly_chart(style_fig(fig_reg, height=390))
-
-        st.markdown("<div class='section-eyebrow'>Detailed IP Location & Region Register</div>", unsafe_allow_html=True)
-        st.dataframe(
-            combined_ip_df[["target_or_host", "ip_address", "city", "region_name", "country", "isp", "as_number", "timezone", "reverse_dns", "discovered_at"]],
-            width='stretch', hide_index=True,
-        )
-
-
-# ---- TAB 4: Entity Link Graph --------------------------------------------
-with tab4:
     if "relationships" in st.session_state.failures:
         st.warning(f"⚠️ Relationship analysis warning: {st.session_state.failures['relationships']}")
     
