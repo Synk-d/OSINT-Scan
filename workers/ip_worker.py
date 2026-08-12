@@ -20,6 +20,7 @@ import pandas as pd
 import requests
 
 from workers.net_utils import get_with_retry
+from workers.shodan_worker import query_shodan_internetdb
 
 HTTP_TIMEOUT = 8
 
@@ -67,12 +68,10 @@ def _get_reverse_dns(ip_str: str) -> str:
         return "—"
 
 
-
-
-
 def run_ip_osint(ip_value: str) -> pd.DataFrame:
     """
-    Performs real IP geolocation, location region area, city, timezone, and network lookup.
+    Performs real IP geolocation, location region area, city, timezone, network lookup,
+    and Shodan InternetDB open ports & CVE vulnerability scanning.
     Returns a single-row pandas DataFrame with live results.
     """
     ip_target = _validate_and_resolve_ip(ip_value)
@@ -96,6 +95,11 @@ def run_ip_osint(ip_value: str) -> pd.DataFrame:
             "as_number": "Non-Routable Private Range",
             "reverse_dns": reverse_dns,
             "is_private": True,
+            "shodan_ports": [],
+            "shodan_cves": [],
+            "shodan_hostnames": [],
+            "shodan_cpes": [],
+            "shodan_tags": [],
             "discovered_at": datetime.now(),
         }
         return pd.DataFrame([row])
@@ -120,6 +124,9 @@ def run_ip_osint(ip_value: str) -> pd.DataFrame:
 
         reverse_dns = data.get("reverse") or _get_reverse_dns(ip_target)
 
+        # Passive Shodan InternetDB Threat Intel query
+        shodan_info = query_shodan_internetdb(ip_target)
+
         row = {
             "ip_address": data.get("query") or ip_target,
             "country": data.get("country") or "—",
@@ -136,6 +143,11 @@ def run_ip_osint(ip_value: str) -> pd.DataFrame:
             "as_number": data.get("as") or "—",
             "reverse_dns": reverse_dns,
             "is_private": False,
+            "shodan_ports": shodan_info.get("ports", []),
+            "shodan_cves": shodan_info.get("vulns", []),
+            "shodan_hostnames": shodan_info.get("hostnames", []),
+            "shodan_cpes": shodan_info.get("cpes", []),
+            "shodan_tags": shodan_info.get("tags", []),
             "discovered_at": datetime.now(),
         }
 

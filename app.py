@@ -38,9 +38,11 @@ from workers.domain_worker import OsintLookupError as DomainLookupError, run_dom
 from workers.ip_worker import OsintLookupError as IpLookupError, run_ip_osint as _live_ip_osint
 from workers.net_utils import DOMAIN_RE, _seed
 from workers.relationship_engine import generate_auto_relationships
+from workers.risk_engine import calculate_risk_score
 from workers.user_worker import OsintLookupError as UserLookupError, run_user_osint as _live_user_osint
 
 load_dotenv()
+
 
 
 # ----------------------------------------------------------------------------
@@ -585,30 +587,86 @@ combined_infra_df = pd.DataFrame(infra_records)
 
 
 # ----------------------------------------------------------------------------
-# TOP METRICS CARDS
+# TOP METRICS & DYNAMIC RISK SCORE
 # ----------------------------------------------------------------------------
 domain_ips = domain_df[domain_df["ip_address"] != "—"]["ip_address"].tolist() if not domain_df.empty else []
 direct_ips = ip_df["ip_address"].tolist() if not ip_df.empty else []
 total_unique_ips = len(set(domain_ips + direct_ips))
 unique_isps = len(set(combined_infra_df["isp"])) if not combined_infra_df.empty else 0
-high_conf_users = len(user_df[user_df["confidence"] >= 90]) if not user_df.empty else 0
+
+email_sec_info = None
+if not domain_df.empty and "spf_status" in domain_df.columns:
+    first_d = domain_df.iloc[0]
+    email_sec_info = {
+        "spf_status": first_d.get("spf_status", "missing"),
+        "dmarc_status": first_d.get("dmarc_status", "missing"),
+    }
+
+shodan_info = None
+if not ip_df.empty and "shodan_ports" in ip_df.columns:
+    r0 = ip_df.iloc[0]
+    shodan_info = {
+        "is_available": True,
+        "ports": r0.get("shodan_ports", []),
+        "vulns": r0.get("shodan_cves", []),
+    }
+
+risk_result = calculate_risk_score(domain_df, ip_df, user_df, shodan_info, email_sec_info)
 
 c1, c2, c3, c4, c5 = st.columns(5)
-metrics = [
-    (c1, "Subdomains Found", len(domain_df), "", ""),
-    (c2, "Tracked IP Locations", total_unique_ips, "alt", ""),
-    (c3, "ISPs & Networks", unique_isps, "purple", ""),
-    (c4, "Verified Profile Hits", len(user_df), "alt", ""),
-    (c5, "High-Confidence Hits", high_conf_users, "danger", ""),
-]
-for col, label, value, cls, delta in metrics:
-    with col:
-        st.markdown(f"""
-        <div class="metric-card {cls}">
-            <div class="metric-label">{label}</div>
-            <div class="metric-value">{value}</div>
+with c1:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="metric-label">Subdomains Found</div>
+        <div class="metric-value">{len(domain_df)}</div>
+    </div>
+    """, unsafe_allow_html=True)
+with c2:
+    st.markdown(f"""
+    <div class="metric-card alt">
+        <div class="metric-label">Tracked IP Locations</div>
+        <div class="metric-value">{total_unique_ips}</div>
+    </div>
+    """, unsafe_allow_html=True)
+with c3:
+    st.markdown(f"""
+    <div class="metric-card purple">
+        <div class="metric-label">ISPs & Networks</div>
+        <div class="metric-value">{unique_isps}</div>
+    </div>
+    """, unsafe_allow_html=True)
+with c4:
+    st.markdown(f"""
+    <div class="metric-card alt">
+        <div class="metric-label">Verified Profile Hits</div>
+        <div class="metric-value">{len(user_df)}</div>
+    </div>
+    """, unsafe_allow_html=True)
+with c5:
+    st.markdown(f"""
+    <div class="metric-card" style="border-left-color: {risk_result['color']};">
+        <div class="metric-label">Threat Severity Score</div>
+        <div class="metric-value" style="color: {risk_result['color']}; font-size:1.5rem;">
+            {risk_result['score']} <span style="font-size:0.8rem; color:var(--text-dim);">/100</span>
+            <span style="font-size:0.65rem; background:{risk_result['badge_bg']}; color:{risk_result['color']}; padding:2px 6px; border-radius:2px; vertical-align:middle; margin-left:4px; font-weight:700;">
+                {risk_result['level']}
+            </span>
         </div>
-        """, unsafe_allow_html=True)
+    </div>
+    """, unsafe_allow_html=True)
+
+if risk_result["breakdown"]:
+    with st.expander(f"🎯 Cyber Risk & Vulnerability Breakdown ({risk_result['score']}/100 — {risk_result['level']})", expanded=False):
+        for item in risk_result["breakdown"]:
+            bd_color = "#E8544B" if item["severity"] == "CRITICAL" else "#FF7849" if item["severity"] == "HIGH" else "#F0A63A"
+            chip_cls = "high" if item["severity"] in ("CRITICAL", "HIGH") else "med"
+            st.markdown(f"""
+            <div style="padding:8px 12px; margin-bottom:6px; background:var(--panel-raised); border-left:3px solid {bd_color}; font-size:0.78rem;">
+                <strong style="color:var(--text);">{item['category']} (+{item['points']} pts)</strong> &nbsp;
+                <span class="chip {chip_cls}">{item['severity']}</span>
+                <div style="color:var(--text-dim); margin-top:2px; font-size:0.72rem;">{item['detail']}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
 
 def style_fig(fig, height=380):
@@ -626,10 +684,11 @@ def style_fig(fig, height=380):
 # ----------------------------------------------------------------------------
 # TABS
 # ----------------------------------------------------------------------------
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "Infrastructure & IP Geolocation",
     "Identity Footprinting & User OSINT",
-    "Topology & Link Graph"
+    "Topology & Link Graph",
+    "🗺️ Tactical GeoINT Map"
 ])
 
 # ---- TAB 1: Infrastructure & IP Geolocation ------------------------------
@@ -678,6 +737,56 @@ with tab1:
                 <div class="metric-value" style="font-size:1.1rem;">{primary_row.get('timezone', '—')}</div>
             </div>
             """, unsafe_allow_html=True)
+
+    # Shodan Passive Intelligence & Email Security
+    if not ip_df.empty and "shodan_ports" in ip_df.columns:
+        shodan_row = ip_df.iloc[0]
+        s_ports = shodan_row.get("shodan_ports", [])
+        s_cves = shodan_row.get("shodan_cves", [])
+        s_hosts = shodan_row.get("shodan_hostnames", [])
+
+        st.markdown("<div class='section-eyebrow'>Shodan Passive Intelligence (Ports & Vulnerabilities)</div>", unsafe_allow_html=True)
+        p1, p2, p3 = st.columns([1.2, 1.2, 1])
+        with p1:
+            st.markdown("**Open Ports Detected**")
+            if s_ports:
+                port_chips = " ".join([
+                    f"<span class='chip { 'high' if p in (3389,445,139,23,21,1433,5432,3306,27017) else 'low' }'>Port {p}</span>"
+                    for p in s_ports
+                ])
+                st.markdown(port_chips, unsafe_allow_html=True)
+            else:
+                st.markdown("<p style='color:var(--text-dim); font-size:0.75rem;'>No open ports indexed on Shodan InternetDB.</p>", unsafe_allow_html=True)
+        with p2:
+            st.markdown("**Exposed Vulnerabilities (CVEs)**")
+            if s_cves:
+                cve_chips = " ".join([f"<span class='chip high'>⚠️ {cve}</span>" for cve in s_cves[:8]])
+                st.markdown(cve_chips, unsafe_allow_html=True)
+            else:
+                st.markdown("<p style='color:var(--cyan); font-size:0.75rem;'>✅ Zero exposed CVE vulnerabilities indexed.</p>", unsafe_allow_html=True)
+        with p3:
+            st.markdown("**Indexed Hostnames**")
+            if s_hosts:
+                st.markdown("<br>".join([f"<code style='color:var(--text); font-size:0.72rem;'>{h}</code>" for h in s_hosts[:4]]), unsafe_allow_html=True)
+            else:
+                st.markdown("<p style='color:var(--text-dim); font-size:0.75rem;'>—</p>", unsafe_allow_html=True)
+
+    if not domain_df.empty and "dmarc_status" in domain_df.columns:
+        d0 = domain_df.iloc[0]
+        dmarc_st = str(d0.get("dmarc_status", "missing"))
+        spf_st = str(d0.get("spf_status", "missing"))
+        st.markdown("<div class='section-eyebrow'>Email Security & Spoofing Defense Posture</div>", unsafe_allow_html=True)
+        e1, e2 = st.columns(2)
+        with e1:
+            d_cls = "low" if dmarc_st in ("enforced", "present") else "med" if dmarc_st == "none" else "high"
+            st.markdown(f"**DMARC Policy**: <span class='chip {d_cls}'>{dmarc_st.upper()}</span>", unsafe_allow_html=True)
+            if d0.get("dmarc_record"):
+                st.caption(f"Record: `{d0['dmarc_record']}`")
+        with e2:
+            s_cls = "low" if spf_st == "present" else "high"
+            st.markdown(f"**SPF Policy**: <span class='chip {s_cls}'>{spf_st.upper()}</span>", unsafe_allow_html=True)
+            if d0.get("spf_record"):
+                st.caption(f"Record: `{d0['spf_record']}`")
 
     left, right = st.columns([1, 1.3])
 
@@ -908,3 +1017,129 @@ with tab3:
                 f"<span class='chip {cls}'>{r['relationship_type']} · {conf}%</span>",
                 unsafe_allow_html=True,
             )
+
+
+# ---- TAB 4: Tactical GeoINT Map ------------------------------------------
+with tab4:
+    st.markdown("<div class='section-eyebrow'>Tactical GeoINT & Geographic Threat Map</div>", unsafe_allow_html=True)
+
+    map_nodes = []
+
+    # 1. Primary IP Target
+    if not ip_df.empty:
+        for _, r in ip_df.iterrows():
+            if float(r.get("lat", 0.0)) != 0.0 or float(r.get("lon", 0.0)) != 0.0:
+                s_ports_str = ", ".join(str(p) for p in r.get("shodan_ports", [])) or "None"
+                map_nodes.append({
+                    "node_type": "Primary IP Target",
+                    "label": f"📍 {r['ip_address']}",
+                    "ip_address": r["ip_address"],
+                    "lat": float(r["lat"]),
+                    "lon": float(r["lon"]),
+                    "location": f"{r.get('city', '—')}, {r.get('country', '—')}",
+                    "isp": r.get("isp", "—"),
+                    "ports": s_ports_str,
+                    "marker_size": 18,
+                    "color": "#E8544B"
+                })
+
+    # 2. Subdomains & Resolved IPs
+    if not domain_df.empty:
+        for _, r in domain_df.iterrows():
+            if float(r.get("lat", 0.0)) != 0.0 or float(r.get("lon", 0.0)) != 0.0:
+                map_nodes.append({
+                    "node_type": "Subdomain / Infra Node",
+                    "label": f"🌐 {r['subdomain']}",
+                    "ip_address": r.get("ip_address", "—"),
+                    "lat": float(r["lat"]),
+                    "lon": float(r["lon"]),
+                    "location": f"{r.get('city', '—')}, {r.get('country', '—')}",
+                    "isp": r.get("isp", "—"),
+                    "ports": "—",
+                    "marker_size": 12,
+                    "color": "#4FD9C9"
+                })
+
+    map_df = pd.DataFrame(map_nodes)
+
+    if not map_df.empty:
+        g1, g2, g3, g4 = st.columns(4)
+        with g1:
+            st.markdown(f"""
+            <div class="metric-card alt">
+                <div class="metric-label">Mapped Nodes</div>
+                <div class="metric-value">{len(map_df)}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with g2:
+            unique_countries = len(map_df["location"].apply(lambda x: x.split(",")[-1].strip()).unique())
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-label">Geographic Countries</div>
+                <div class="metric-value">{unique_countries}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with g3:
+            st.markdown(f"""
+            <div class="metric-card purple">
+                <div class="metric-label">Primary Region</div>
+                <div class="metric-value" style="font-size:1.1rem;">{map_df.iloc[0]['location']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with g4:
+            st.markdown(f"""
+            <div class="metric-card alt">
+                <div class="metric-label">Map Engine</div>
+                <div class="metric-value" style="font-size:1.1rem;">Dark Vector Map</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        fig_geoint = px.scatter_geo(
+            map_df,
+            lat="lat",
+            lon="lon",
+            color="node_type",
+            size="marker_size",
+            hover_name="label",
+            hover_data={
+                "ip_address": True,
+                "location": True,
+                "isp": True,
+                "ports": True,
+                "node_type": False,
+                "marker_size": False,
+                "lat": False,
+                "lon": False
+            },
+            color_discrete_map={
+                "Primary IP Target": "#E8544B",
+                "Subdomain / Infra Node": "#4FD9C9",
+            },
+            projection="natural earth",
+        )
+
+        # Add visual flight connection lines if multiple nodes exist
+        if len(map_df) > 1:
+            target_node = map_df.iloc[0]
+            for i in range(1, len(map_df)):
+                row_node = map_df.iloc[i]
+                fig_geoint.add_trace(
+                    px.line_geo(
+                        lat=[target_node["lat"], row_node["lat"]],
+                        lon=[target_node["lon"], row_node["lon"]],
+                    ).data[0]
+                )
+                fig_geoint.data[-1].line.color = "rgba(240, 166, 58, 0.4)"
+                fig_geoint.data[-1].line.width = 1
+
+        fig_geoint.update_geos(
+            bgcolor="#0A0D10",
+            showland=True, landcolor="#12171C",
+            showocean=True, oceancolor="#0A0D10",
+            showlakes=True, lakecolor="#0A0D10",
+            showcountries=True, countrycolor="#223038",
+            showcoastlines=True, coastlinecolor="#223038",
+        )
+        st.plotly_chart(style_fig(fig_geoint, height=540))
+    else:
+        st.markdown("<p style='color:var(--text-dim); font-size:0.85rem; font-style:italic;'>No geographic coordinates available to render tactical map. Ingest a Domain or IP address in the sidebar.</p>", unsafe_allow_html=True)

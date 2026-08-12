@@ -142,6 +142,50 @@ def _resolve_mx(domain_value: str) -> List[str]:
         return []
 
 
+def _resolve_dmarc_spf(domain_value: str) -> dict:
+    """Evaluates SPF and DMARC DNS TXT records for email spoofing vulnerability assessment."""
+    spf_status = "missing"
+    spf_record = ""
+    dmarc_status = "missing"
+    dmarc_record = ""
+
+    # Resolve TXT records on domain for SPF
+    try:
+        answers = dns.resolver.resolve(domain_value, "TXT", lifetime=5)
+        for rdata in answers:
+            txt = str(rdata).strip('"')
+            if "v=spf1" in txt.lower():
+                spf_status = "present"
+                spf_record = txt
+                break
+    except Exception:
+        pass
+
+    # Resolve TXT record on _dmarc.domain for DMARC
+    try:
+        answers = dns.resolver.resolve(f"_dmarc.{domain_value}", "TXT", lifetime=5)
+        for rdata in answers:
+            txt = str(rdata).strip('"')
+            if "v=dmarc1" in txt.lower():
+                dmarc_record = txt
+                if "p=reject" in txt.lower() or "p=quarantine" in txt.lower():
+                    dmarc_status = "enforced"
+                elif "p=none" in txt.lower():
+                    dmarc_status = "none"
+                else:
+                    dmarc_status = "present"
+                break
+    except Exception:
+        pass
+
+    return {
+        "spf_status": spf_status,
+        "spf_record": spf_record,
+        "dmarc_status": dmarc_status,
+        "dmarc_record": dmarc_record,
+    }
+
+
 def _geo_lookup(ip_address: str) -> dict:
     """ip-api.com free tier: no key, ~45 req/min. Degrades to blanks on failure."""
     try:
@@ -200,7 +244,7 @@ def run_domain_osint(domain_value: str) -> pd.DataFrame:
     if not subdomains:
         subdomains = [domain_value]
 
-    # Try to get registrar and MX info, but don't fail the whole sweep if they error
+    # Try to get registrar, MX, and DMARC/SPF info
     try:
         whois_info = _whois_lookup(domain_value)
     except Exception:
@@ -210,6 +254,11 @@ def run_domain_osint(domain_value: str) -> pd.DataFrame:
         mx_records = _resolve_mx(domain_value)
     except Exception:
         mx_records = []
+
+    try:
+        email_sec = _resolve_dmarc_spf(domain_value)
+    except Exception:
+        email_sec = {"spf_status": "missing", "spf_record": "", "dmarc_status": "missing", "dmarc_record": ""}
 
     rows = []
     for i, sub in enumerate(subdomains):
@@ -235,6 +284,10 @@ def run_domain_osint(domain_value: str) -> pd.DataFrame:
             "registrar": whois_info["registrar"],
             "mx_records": mx_records if i == 0 else [],
             "raw_whois": whois_info["raw"] if i == 0 else {},
+            "spf_status": email_sec["spf_status"] if i == 0 else "—",
+            "dmarc_status": email_sec["dmarc_status"] if i == 0 else "—",
+            "spf_record": email_sec["spf_record"] if i == 0 else "",
+            "dmarc_record": email_sec["dmarc_record"] if i == 0 else "",
             "discovered_at": datetime.now(),
         })
         time.sleep(0.4)  # be polite to ip-api.com's free-tier rate limit
