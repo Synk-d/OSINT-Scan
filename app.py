@@ -138,15 +138,40 @@ header[data-testid="stHeader"] { background-color: transparent; }
 section[data-testid="stSidebar"] { background-color: var(--panel); border-right: 1px solid var(--line); }
 section[data-testid="stSidebar"] .stMarkdown p { color: var(--text-dim); font-size: 0.75rem; }
 
-.stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid var(--line); }
-.stTabs [data-baseweb="tab"] {
-    background-color: transparent; color: var(--text-dim); border: none;
-    font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; padding: 10px 4px;
+/* STREAMLIT TAB CENTERING */
+.stTabs, [data-testid="stTabs"] {
+    width: 100% !important;
 }
-.stTabs [aria-selected="true"] { color: var(--amber) !important; border-bottom: 2px solid var(--amber) !important; }
+.stTabs > div:first-child,
+[data-testid="stTabs"] > div:first-child,
+[data-testid="stTabsHeader"],
+.stTabs [data-baseweb="tab-highlight-container"],
+.stTabs [data-baseweb="tab-list"],
+.stTabs [role="tablist"] {
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    width: 100% !important;
+    margin: 0 auto !important;
+    gap: 16px !important;
+    border-bottom: 1px solid var(--line) !important;
+}
+.stTabs [data-baseweb="tab"], .stTabs button[role="tab"], [data-testid="stTab"] {
+    background-color: transparent !important;
+    color: var(--text-dim) !important;
+    border: none !important;
+    font-size: 0.78rem !important;
+    letter-spacing: 0.08em !important;
+    text-transform: uppercase !important;
+    padding: 10px 16px !important;
+}
+.stTabs [aria-selected="true"], .stTabs button[role="tab"][aria-selected="true"] {
+    color: var(--amber) !important;
+    border-bottom: 2px solid var(--amber) !important;
+}
 
-/* TACTICAL BUTTON STYLING */
-.stButton > button {
+/* SIDEBAR TACTICAL BUTTON STYLING */
+section[data-testid="stSidebar"] .stButton > button {
     background-color: var(--amber) !important; 
     color: var(--void) !important; 
     border: 2px solid var(--amber) !important;
@@ -162,24 +187,53 @@ section[data-testid="stSidebar"] .stMarkdown p { color: var(--text-dim); font-si
     box-shadow: 0 4px 12px rgba(240, 166, 58, 0.15) !important;
     transition: all 0.2s ease-in-out !important;
 }
-.stButton > button p { 
+section[data-testid="stSidebar"] .stButton > button p { 
     text-align: center !important; 
     margin: 0 !important;
     flex: 1 !important; 
     display: flex !important;
     justify-content: center !important;
 }
-.stButton > button:hover { 
+section[data-testid="stSidebar"] .stButton > button:hover { 
     background-color: #FFC069 !important; 
     border-color: #FFC069 !important; 
     color: var(--void) !important;
     box-shadow: 0 6px 20px rgba(240, 166, 58, 0.3) !important;
     transform: translateY(-2px) !important;
 }
-.stButton > button:active { 
+section[data-testid="stSidebar"] .stButton > button:active { 
     background-color: #D48F2E !important; 
     border-color: #D48F2E !important;
     transform: translateY(1px) !important;
+}
+
+/* MAIN CONTENT BUTTON STYLING (MATCHING ST.BUTTON & ST.DOWNLOAD_BUTTON) */
+.stButton > button, .stDownloadButton > button {
+    background-color: var(--panel-raised) !important;
+    color: var(--text) !important;
+    border: 1px solid var(--line) !important;
+    border-radius: 4px !important;
+    font-size: 0.88rem !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.04em !important;
+    padding: 10px 16px !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    transition: all 0.2s ease-in-out !important;
+}
+.stButton > button p, .stDownloadButton > button p {
+    text-align: center !important;
+    margin: 0 !important;
+    color: var(--text) !important;
+}
+.stButton > button:hover, .stDownloadButton > button:hover {
+    background-color: var(--line) !important;
+    border-color: var(--amber) !important;
+    color: var(--amber) !important;
+}
+.stButton > button:hover p, .stDownloadButton > button:hover p {
+    color: var(--amber) !important;
 }
 
 [data-testid="stDataFrame"] { border: 1px solid var(--line); }
@@ -484,7 +538,7 @@ if sweep and target_value.strip():
                 st.error(f"Email & identity footprinting failed: {e}")
 
 
-    if st.session_state.domain_swept and st.session_state.user_swept:
+    if st.session_state.domain_val and st.session_state.user_val:
         try:
             st.session_state.rel_df = generate_auto_relationships(
                 st.session_state.domain_df, st.session_state.user_df,
@@ -704,11 +758,11 @@ def style_fig(fig, height=380):
 # TABS
 # ----------------------------------------------------------------------------
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "Infrastructure",
-    "Email & Identity",
-    "Link Graph",
-    "Geo Map",
-    "AI Brief & Export"
+    "Domain",
+    "Email",
+    "Relation",
+    "Geolocation",
+    "Final Report"
 ])
 
 
@@ -1148,6 +1202,10 @@ with tab3:
     if "relationships" in st.session_state.failures:
         st.warning(f"Relationship analysis warning: {st.session_state.failures['relationships']}")
 
+    if rel_df.empty and domain_val and user_val:
+        rel_df = generate_auto_relationships(domain_df, user_df, domain_val, user_val)
+        st.session_state.rel_df = rel_df
+
     st.markdown("<div class='section-eyebrow'>Infrastructure & Identity Topology Correlation</div>", unsafe_allow_html=True)
     physics_on = st.toggle("Enable physics engine", value=True)
 
@@ -1339,7 +1397,7 @@ with tab5:
     colA, colB = st.columns([1, 1])
     
     with colA:
-        if st.button("🧠 Generate AI Executive Brief", use_container_width=True):
+        if st.button("Generate AI Executive Brief", use_container_width=True):
             with st.spinner("Analyzing OSINT data with Gemini..."):
                 summary = generate_osint_brief(
                     domain_val, user_val, ip_val,
@@ -1360,7 +1418,7 @@ with tab5:
             st.session_state['ai_summary']
         )
         st.download_button(
-            label="📄 Download PDF Report",
+            label="Download PDF Report",
             data=pdf_bytes,
             file_name=f"OSINT_Report_{domain_val or user_val or ip_val or 'Target'}.pdf",
             mime="application/pdf",
