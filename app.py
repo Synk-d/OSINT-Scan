@@ -39,7 +39,7 @@ from workers.ip_worker import OsintLookupError as IpLookupError, run_ip_osint as
 from workers.net_utils import DOMAIN_RE, _seed
 from workers.relationship_engine import generate_auto_relationships
 from workers.risk_engine import calculate_risk_score
-from workers.user_worker import OsintLookupError as UserLookupError, run_user_osint as _live_user_osint
+from workers.user_worker import OsintLookupError as UserLookupError, _email_md5, run_user_osint as _live_user_osint
 
 load_dotenv()
 
@@ -266,21 +266,24 @@ def clean_domain_input(domain_value: str) -> str:
 
 
 def clean_user_input(username_value: str) -> str:
-    """Extract clean username from profile URLs or raw input strings."""
-    username_value = username_value.strip().lstrip("@")
-    if username_value.startswith(("http://", "https://")) or "://" in username_value:
+    """Extract clean email or username from profile URLs or raw input strings."""
+    val = username_value.strip()
+    if "@" in val and "." in val.split("@")[-1]:
+        return val.lower()
+    val = val.lstrip("@")
+    if val.startswith(("http://", "https://")) or "://" in val:
         try:
-            parsed = urlparse(username_value)
+            parsed = urlparse(val)
             path_parts = [p for p in parsed.path.split("/") if p]
             if path_parts:
-                username_value = path_parts[-1] if path_parts[0] in ("in", "user", "users", "u", "profile") and len(path_parts) > 1 else path_parts[0]
+                val = path_parts[-1] if path_parts[0] in ("in", "user", "users", "u", "profile") and len(path_parts) > 1 else path_parts[0]
         except Exception:
             pass
-    elif "/" in username_value:
-        parts = [p for p in username_value.split("/") if p]
+    elif "/" in val:
+        parts = [p for p in val.split("/") if p]
         if parts:
-            username_value = parts[-1] if len(parts) > 1 else parts[0]
-    return username_value.strip().lstrip("@")
+            val = parts[-1] if len(parts) > 1 else parts[0]
+    return val.strip().lstrip("@")
 
 
 def validate_domain(domain_value: str) -> tuple[bool, str, str]:
@@ -294,12 +297,16 @@ def validate_domain(domain_value: str) -> tuple[bool, str, str]:
 
 
 def validate_username(username_value: str) -> tuple[bool, str, str]:
-    """Validate username or full name input. Returns (is_valid, error_message, cleaned_username)."""
+    """Validate email address or username input. Returns (is_valid, error_message, cleaned_val)."""
     cleaned = clean_user_input(username_value)
     if not cleaned:
-        return False, "Username or full name cannot be empty.", ""
+        return False, "Email address or username cannot be empty.", ""
     if len(cleaned) < 2:
-        return False, "Username / name must be at least 2 characters.", ""
+        return False, "Input must be at least 2 characters.", ""
+    if "@" in cleaned:
+        if not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", cleaned):
+            return False, f"'{username_value}' is not a valid email address.", ""
+        return True, "", cleaned
     if not re.match(r"^[a-zA-Z0-9_.\- ]+$", cleaned):
         return False, f"'{username_value}' contains invalid characters.", ""
     return True, "", cleaned
@@ -326,7 +333,7 @@ def run_domain_osint(domain_value: str) -> tuple[pd.DataFrame, str]:
 
 
 def run_user_osint(username_value: str) -> tuple[pd.DataFrame, str]:
-    """Runs real live advanced user sweep across 12+ OSINT engines."""
+    """Runs real live Email-Centric & Service OSINT across 12+ engines."""
     return _live_user_osint(username_value), "live"
 
 
@@ -342,14 +349,16 @@ def persist_sweep(domain_val, user_val, ip_val, domain_df, user_df, ip_df, rel_d
             domain_target_id = repo.get_or_create_target("domain", domain_val)
             repo.save_domain_intel(domain_target_id, domain_df.to_dict("records"))
         if user_val and not user_df.empty:
-            user_target_id = repo.get_or_create_target("user", user_val)
+            target_type = "email" if "@" in user_val else "user"
+            user_target_id = repo.get_or_create_target(target_type, user_val)
             repo.save_user_intel(user_target_id, user_df.to_dict("records"))
         if ip_val and not ip_df.empty:
             ip_target_id = repo.get_or_create_target("ip", ip_val)
             repo.save_ip_intel(ip_target_id, ip_df.to_dict("records"))
         if domain_val and user_val and not rel_df.empty:
             domain_target_id = repo.get_or_create_target("domain", domain_val)
-            user_target_id = repo.get_or_create_target("user", user_val)
+            target_type = "email" if "@" in user_val else "user"
+            user_target_id = repo.get_or_create_target(target_type, user_val)
             repo.save_relationships(domain_target_id, user_target_id, rel_df.to_dict("records"))
     except DatabaseUnavailable:
         pass
@@ -366,20 +375,21 @@ with st.sidebar:
     """, unsafe_allow_html=True)
     
     st.markdown("<div class='section-eyebrow'>Target Ingestion</div>", unsafe_allow_html=True)
-    target_type = st.radio("Target type", ["Domain / IP", "Username / Name"], horizontal=True, label_visibility="collapsed")
+    target_type = st.radio("Target type", ["Domain / IP", "Email / Identity"], horizontal=True, label_visibility="collapsed")
 
     if target_type == "Domain / IP":
         target_value = st.text_input(
-            "Target Domain or IP Address", value="", placeholder="e.g. example.com or 8.8.8.8",
+            "Target Domain or IP Address", value="", placeholder="e.g. example.com",
             key="domain_ip_input", label_visibility="collapsed",
         )
     else:
         target_value = st.text_input(
-            "Target Username or Full Name", value="", placeholder="e.g. torvalds or Arushi Batham",
+            "Target Email Address or Handle", value="", placeholder="e.g. user@domain.com",
             key="user_input", label_visibility="collapsed",
         )
 
     sweep = st.button("START", use_container_width=True)
+
 
     st.markdown("<div class='section-eyebrow'>DB Connection</div>", unsafe_allow_html=True)
     with st.expander("Settings", expanded=False):
@@ -456,20 +466,21 @@ if sweep and target_value.strip():
                 except Exception as e:
                     st.error(f"Domain lookup failed: {e}")
 
-    else:  # Username
+    else:  # Email / Identity
         is_valid, error_msg, cleaned_val = validate_username(raw_val)
         if not is_valid:
             st.error(f"{error_msg}")
         else:
             st.session_state.user_val = cleaned_val
             try:
-                with st.spinner(f"Sweeping @{cleaned_val} across 12+ public OSINT platforms…"):
+                with st.spinner(f"Sweeping {cleaned_val} — verifying Gravatar, GitHub, Keybase & 12+ email-linked services…"):
                     df, src = run_user_osint(st.session_state.user_val)
                     st.session_state.user_df = df
                     st.session_state.data_source["user"] = src
                 st.session_state.user_swept = True
             except Exception as e:
-                st.error(f"Username footprinting failed: {e}")
+                st.error(f"Email & identity footprinting failed: {e}")
+
 
     if st.session_state.domain_swept and st.session_state.user_swept:
         try:
@@ -684,10 +695,11 @@ def style_fig(fig, height=380):
 # ----------------------------------------------------------------------------
 tab1, tab2, tab3, tab4 = st.tabs([
     "Infrastructure",
-    "Identity Info",
+    "Email & Identity",
     "Link Graph",
     "Geo Map"
 ])
+
 
 # ---- TAB 1: Infrastructure & IP Geolocation ------------------------------
 with tab1:
@@ -840,59 +852,165 @@ with tab1:
         st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No infrastructure or IP sweep data yet. Enter a Domain or IP in the left sidebar and click START.</p>", unsafe_allow_html=True)
 
 
-# ---- TAB 2: Identity Footprinting & User OSINT ---------------------------
+# ---- TAB 2: Email & Identity Intelligence OSINT --------------------------
 with tab2:
     if "user" in st.session_state.failures:
-        st.warning(f"User lookup warning: {st.session_state.failures['user']}")
-    
+        st.warning(f"Email/Identity lookup warning: {st.session_state.failures['user']}")
+
     if not user_df.empty:
-        # Display 5 Key Highlights Cards for User OSINT
+        # ── Metric cards ─────────────────────────────────────────────────────
         u1, u2, u3, u4, u5 = st.columns(5)
         total_hits = len(user_df)
-        high_conf = len(user_df[user_df["confidence"] >= 90])
-        emails_found = len(user_df[user_df["associated_email"].notna() & (user_df["associated_email"] != "—")])
-        
+        is_email_target = "@" in user_val
+        email_dom = user_val.split("@")[1] if is_email_target else "—"
+        dom_match = "CONNECTED" if (domain_val and is_email_target and email_dom.lower() == domain_val.lower()) else email_dom
+
+        # Extract breach count from HIBP row if present
+        hibp_rows = user_df[user_df["platform"] == "HaveIBeenPwned"]
+        breach_count_display = "N/A"
+        breach_color = "var(--text-dim)"
+        if not hibp_rows.empty:
+            hibp_r = hibp_rows.iloc[0]
+            disp_name = str(hibp_r.get("display_name", ""))
+            if "No Breaches" in disp_name:
+                breach_count_display = "✓ Clean"
+                breach_color = "var(--cyan)"
+            elif "Exposed" in disp_name:
+                breach_count_display = disp_name.split("Exposed in ")[-1] if "Exposed in " in disp_name else "Exposed"
+                breach_color = "#E8544B"
+            elif "API key" in disp_name:
+                breach_count_display = "Key Needed"
+
+        # Extract EmailRep reputation if present
+        emailrep_rows = user_df[user_df["platform"] == "EmailRep.io"]
+        reputation_display = "—"
+        if not emailrep_rows.empty:
+            rep = emailrep_rows.iloc[0]
+            reputation_display = str(rep.get("reputation", rep.get("display_name", "—"))).title()
+
         all_kws = []
         for _, r in user_df.iterrows():
             if isinstance(r.get("bio_keywords"), list):
                 all_kws.extend(r["bio_keywords"])
-        
+        high_conf = len(user_df[user_df["confidence"] >= 90])
+
         with u1:
             st.markdown(f"""
             <div class="metric-card alt">
-                <div class="metric-label">Target Handle</div>
-                <div class="metric-value" style="font-size:1.3rem;">@{user_val}</div>
+                <div class="metric-label">Target Email</div>
+                <div class="metric-value" style="font-size:0.95rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{user_val}</div>
             </div>
             """, unsafe_allow_html=True)
         with u2:
             st.markdown(f"""
             <div class="metric-card">
-                <div class="metric-label">Verified Platforms</div>
-                <div class="metric-value" style="font-size:1.3rem;">{total_hits} / 12+</div>
+                <div class="metric-label">Services Found</div>
+                <div class="metric-value" style="font-size:1.3rem;">{total_hits}</div>
             </div>
             """, unsafe_allow_html=True)
         with u3:
             st.markdown(f"""
             <div class="metric-card purple">
-                <div class="metric-label">High-Confidence</div>
-                <div class="metric-value" style="font-size:1.3rem;">{high_conf}</div>
+                <div class="metric-label">Email Reputation</div>
+                <div class="metric-value" style="font-size:1.1rem;">{reputation_display}</div>
             </div>
             """, unsafe_allow_html=True)
         with u4:
             st.markdown(f"""
-            <div class="metric-card alt">
-                <div class="metric-label">Public Emails</div>
-                <div class="metric-value" style="font-size:1.3rem;">{emails_found}</div>
+            <div class="metric-card danger">
+                <div class="metric-label">Breach Exposure</div>
+                <div class="metric-value" style="font-size:1.1rem; color:{breach_color};">{breach_count_display}</div>
             </div>
             """, unsafe_allow_html=True)
         with u5:
             st.markdown(f"""
-            <div class="metric-card danger">
-                <div class="metric-label">Extracted Keywords</div>
-                <div class="metric-value" style="font-size:1.3rem;">{len(all_kws)}</div>
+            <div class="metric-card alt">
+                <div class="metric-label">Domain Link</div>
+                <div class="metric-value" style="font-size:0.95rem; color:{'var(--cyan)' if dom_match == 'CONNECTED' else 'var(--text-dim)'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{dom_match}</div>
             </div>
             """, unsafe_allow_html=True)
 
+        # ── Gravatar / Identity Banner ────────────────────────────────────
+        gravatar_rows = user_df[user_df["platform"] == "Gravatar"]
+        # Fall back to Clearbit for avatar/name if no Gravatar
+        clearbit_rows = user_df[user_df["platform"] == "Clearbit Person"]
+        profile_row = gravatar_rows.iloc[0] if not gravatar_rows.empty else (clearbit_rows.iloc[0] if not clearbit_rows.empty else None)
+        if profile_row is not None:
+            avatar_src = str(profile_row.get("avatar_url", "") or f"https://www.gravatar.com/avatar/{_email_md5(user_val)}?d=identicon")
+            d_name = str(profile_row.get("display_name", user_val))
+            p_url = str(profile_row.get("profile_url", ""))
+            source_badge = "Gravatar" if not gravatar_rows.empty else "Clearbit"
+            st.markdown(f"""
+            <div style="background:var(--panel-raised); border:1px solid var(--line); border-left:4px solid var(--cyan); padding:14px 20px; margin-bottom:16px; border-radius:6px; display:flex; align-items:center; gap:18px;">
+                <img src="{avatar_src}" style="width:58px; height:58px; border-radius:50%; border:2px solid var(--cyan); object-fit:cover;" alt="Avatar"/>
+                <div style="flex:1; min-width:0;">
+                    <div style="font-size:1.1rem; font-weight:700; color:var(--text);">{d_name} <span class="chip low">{source_badge}</span></div>
+                    <div style="font-size:0.8rem; color:var(--text-dim); margin-top:4px;">
+                        Email: <strong style="color:var(--cyan);">{user_val}</strong>
+                        {'&nbsp;&middot;&nbsp; Profile: <a href="' + p_url + '" target="_blank" style="color:var(--purple);">' + p_url[:60] + ('…' if len(p_url) > 60 else '') + '</a>' if p_url else ''}
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # ── Breach & Reputation Detail Cards ─────────────────────────────
+        intel_cols = st.columns(2)
+        with intel_cols[0]:
+            if not hibp_rows.empty:
+                hibp_r = hibp_rows.iloc[0]
+                breach_names = hibp_r.get("breach_names", [])
+                breach_html = ""
+                if isinstance(breach_names, list) and breach_names:
+                    breach_html = "".join(f"<span class='chip danger' style='margin:2px;display:inline-block;'>{b}</span>" for b in breach_names[:10])
+                    if len(breach_names) > 10:
+                        breach_html += f"<span class='chip' style='margin:2px;'>+{len(breach_names)-10} more</span>"
+                st.markdown(f"""
+                <div style="background:var(--panel-raised); border:1px solid var(--line); border-left:4px solid #E8544B; padding:14px; border-radius:6px; margin-bottom:12px;">
+                    <div style="font-size:0.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim); margin-bottom:6px;">HaveIBeenPwned Breach Intelligence</div>
+                    <div style="font-size:1rem; font-weight:700; color:var(--text); margin-bottom:8px;">{hibp_r.get('display_name', '—')}</div>
+                    {breach_html if breach_html else "<span style='color:var(--cyan); font-size:0.85rem;'>✓ No known breaches</span>"}
+                </div>
+                """, unsafe_allow_html=True)
+
+        with intel_cols[1]:
+            if not emailrep_rows.empty:
+                rep_r = emailrep_rows.iloc[0]
+                rep_val = str(rep_r.get("reputation", "unknown")).lower()
+                rep_color = {"high": "var(--cyan)", "medium": "#F0A63A", "low": "#E8544B", "none": "#E8544B"}.get(rep_val, "var(--text-dim)")
+                profiles = rep_r.get("linked_profiles", [])
+                profiles_html = ""
+                if isinstance(profiles, list) and profiles:
+                    profiles_html = "".join(f"<span class='chip low' style='margin:2px;display:inline-block;'>{p}</span>" for p in profiles[:8])
+                cred_leaked = rep_r.get("credentials_leaked", False)
+                first_seen = rep_r.get("first_seen", "")
+                st.markdown(f"""
+                <div style="background:var(--panel-raised); border:1px solid var(--line); border-left:4px solid {rep_color}; padding:14px; border-radius:6px; margin-bottom:12px;">
+                    <div style="font-size:0.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim); margin-bottom:6px;">EmailRep.io Intelligence</div>
+                    <div style="font-size:1rem; font-weight:700; color:{rep_color}; margin-bottom:4px;">Reputation: {rep_val.title()}</div>
+                    <div style="font-size:0.8rem; color:var(--text-dim); margin-bottom:8px;">
+                        {'🔐 Credentials leaked &nbsp;·&nbsp; ' if cred_leaked else ''}
+                        {'First seen: ' + first_seen if first_seen else ''}
+                    </div>
+                    {profiles_html}
+                </div>
+                """, unsafe_allow_html=True)
+
+        # ── MX / Infrastructure inline card ──────────────────────────────
+        mx_rows = user_df[user_df["platform"] == "MX Infrastructure"]
+        if not mx_rows.empty:
+            mx_r = mx_rows.iloc[0]
+            infra_type = mx_r.get("infra_type", str(mx_r.get("display_name", "")))
+            mx_list = mx_r.get("mx_records", [])
+            mx_str = " · ".join(mx_list[:4]) if isinstance(mx_list, list) else ""
+            st.markdown(f"""
+            <div style="background:var(--panel-raised); border:1px solid var(--line); border-left:4px solid var(--purple); padding:12px 16px; border-radius:6px; margin-bottom:12px;">
+                <div style="font-size:0.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim); margin-bottom:4px;">Email Infrastructure (MX Records)</div>
+                <div style="font-size:0.95rem; font-weight:700; color:var(--text);">{infra_type}</div>
+                <div style="font-size:0.78rem; color:var(--text-dim); margin-top:4px;">{mx_str}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # ── Charts row ───────────────────────────────────────────────────────
     left, right = st.columns([1, 1])
 
     with left:
@@ -912,7 +1030,7 @@ with tab2:
             fig_pf.update_layout(xaxis_title="Confidence Rating (%)", yaxis_title="")
             st.plotly_chart(style_fig(fig_pf, height=360))
         else:
-            st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No identity footprint data yet. Select Username in the left sidebar and click START.</p>", unsafe_allow_html=True)
+            st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No identity footprint data yet. Select Email / Identity in the left sidebar and click START.</p>", unsafe_allow_html=True)
 
     with right:
         st.markdown("<div class='section-eyebrow'>Bio Keyword & Interest Cloud</div>", unsafe_allow_html=True)
@@ -940,19 +1058,15 @@ with tab2:
         else:
             st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No bio keywords extracted.</p>", unsafe_allow_html=True)
 
-    st.markdown("<div class='section-eyebrow'>Verified Platform Hits & OSINT Footprint Register</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-eyebrow'>Verified Platform Hits & Linked Services Register</div>", unsafe_allow_html=True)
     if not user_df.empty:
         show_u = user_df.copy()
         show_u["bio_keywords"] = show_u["bio_keywords"].apply(lambda x: ", ".join(x) if isinstance(x, list) else str(x))
         show_u["associated_email"] = show_u["associated_email"].fillna("—")
-        
         display_cols = [c for c in ["platform", "category", "display_name", "profile_url", "associated_email", "confidence", "bio_keywords"] if c in show_u.columns]
-        st.dataframe(
-            show_u[display_cols],
-            width='stretch', hide_index=True,
-        )
+        st.dataframe(show_u[display_cols], width='stretch', hide_index=True)
     else:
-        st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No user sweep data available. Ingest a username from the sidebar.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:var(--text-dim); font-size:0.8rem; font-style:italic;'>No email sweep data available. Ingest an email address from the sidebar.</p>", unsafe_allow_html=True)
 
 
 # ---- TAB 3: Topology & Link Graph ----------------------------------------
@@ -967,7 +1081,8 @@ with tab3:
     if domain_val:
         net.add_node(domain_val, label=domain_val, color="#4FD9C9", shape="dot", size=28, title="Domain (root)")
     if user_val:
-        net.add_node(user_val, label=f"@{user_val}", color="#3AD65B", shape="dot", size=28, title="Username (root)")
+        user_node_label = user_val if "@" in user_val else f"@{user_val}"
+        net.add_node(user_val, label=user_node_label, color="#3AD65B", shape="dot", size=28, title="Target Email / Identity (root)")
     if ip_val:
         net.add_node(ip_val, label=f"IP: {ip_val}", color="#A855F7", shape="dot", size=28, title="IP Target (root)")
 
@@ -988,7 +1103,7 @@ with tab3:
         for _, r in user_df.iterrows():
             net.add_node(r["platform"], color="#3AD65B", shape="dot", size=14, title=r["profile_url"])
             if user_val:
-                net.add_edge(user_val, r["platform"])
+                net.add_edge(user_val, r["platform"], title="email_linked_service")
 
     if not rel_df.empty:
         for _, r in rel_df.iterrows():
@@ -1002,6 +1117,7 @@ with tab3:
     with open(html_path, "r", encoding="utf-8") as f:
         graph_html = f.read()
     components.html(graph_html, height=560, scrolling=False)
+
 
     st.markdown("<div class='section-eyebrow'>Relationship Register</div>", unsafe_allow_html=True)
     if rel_df.empty:

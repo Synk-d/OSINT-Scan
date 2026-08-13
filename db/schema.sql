@@ -5,7 +5,7 @@
 -- Core target logging register
 CREATE TABLE IF NOT EXISTS targets (
     id SERIAL PRIMARY KEY,
-    target_type VARCHAR(20) NOT NULL CHECK (target_type IN ('domain', 'user', 'ip')),
+    target_type VARCHAR(20) NOT NULL CHECK (target_type IN ('domain', 'user', 'ip', 'email')),
     target_value VARCHAR(255) NOT NULL UNIQUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

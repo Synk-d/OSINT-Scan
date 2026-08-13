@@ -115,25 +115,26 @@ def calculate_risk_score(
                 "detail": "Missing SPF record — unauthorized servers can originate mail."
             })
 
-    # 4. Identity Surface Footprint
+    # 4. Email & Linked Service Attack Surface Footprint
     if user_df is not None and not user_df.empty:
         hits = len(user_df[user_df["confidence"] >= 50])
-        if hits >= 8:
+        if hits >= 6:
             score += 15
             breakdown.append({
-                "category": "Identity Attack Surface",
+                "category": "Email & Service Attack Surface",
                 "points": 15,
                 "severity": "MEDIUM",
-                "detail": f"High digital footprint: {hits} active platform profiles identified."
+                "detail": f"Broad digital footprint: {hits} linked online service profiles & platforms verified."
             })
-        elif hits >= 4:
+        elif hits >= 3:
             score += 8
             breakdown.append({
-                "category": "Identity Attack Surface",
+                "category": "Email & Service Attack Surface",
                 "points": 8,
                 "severity": "LOW",
-                "detail": f"Moderate digital footprint: {hits} platform profiles verified."
+                "detail": f"Moderate digital footprint: {hits} service profiles verified."
             })
+
 
     # Clamp total score between 0 and 100
     final_score = min(100, max(0, score))
