@@ -37,6 +37,8 @@ from db.connection import DatabaseUnavailable
 from workers.domain_worker import OsintLookupError as DomainLookupError, run_domain_osint as _live_domain_osint
 from workers.ip_worker import OsintLookupError as IpLookupError, run_ip_osint as _live_ip_osint
 from workers.net_utils import DOMAIN_RE, _seed
+from lib.ai_analyzer import generate_osint_brief, generate_domain_brief, generate_user_brief
+from lib.pdf_generator import build_pdf_report
 from workers.relationship_engine import generate_auto_relationships
 from workers.risk_engine import calculate_risk_score
 from workers.user_worker import OsintLookupError as UserLookupError, _email_md5, run_user_osint as _live_user_osint
@@ -496,6 +498,14 @@ if sweep and target_value.strip():
         st.session_state.domain_df, st.session_state.user_df, st.session_state.ip_df,
         st.session_state.rel_df,
     )
+    
+    # Automatically generate specific briefs after a sweep
+    if st.session_state.domain_swept or st.session_state.ip_swept:
+        with st.spinner("Analyzing infrastructure with Gemini..."):
+            st.session_state.domain_brief = generate_domain_brief(st.session_state.domain_val, st.session_state.domain_df, st.session_state.ip_df)
+    if st.session_state.user_swept:
+        with st.spinner("Analyzing identity footprint with Gemini..."):
+            st.session_state.user_brief = generate_user_brief(st.session_state.user_val, st.session_state.user_df)
 
 
 domain_val = st.session_state.domain_val
@@ -693,11 +703,12 @@ def style_fig(fig, height=380):
 # ----------------------------------------------------------------------------
 # TABS
 # ----------------------------------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Infrastructure",
     "Email & Identity",
     "Link Graph",
-    "Geo Map"
+    "Geo Map",
+    "AI Brief & Export"
 ])
 
 
@@ -707,6 +718,10 @@ with tab1:
         st.warning(f"Domain lookup warning: {st.session_state.failures['domain']}")
     if "ip" in st.session_state.failures:
         st.warning(f"IP lookup warning: {st.session_state.failures['ip']}")
+
+    if st.session_state.get('domain_brief') and not st.session_state['domain_brief'].startswith("⚠️"):
+        with st.expander("🤖 Domain AI Analysis", expanded=True):
+            st.markdown(st.session_state['domain_brief'])
 
     # Render location highlight cards if data is available
     if not combined_infra_df.empty:
@@ -856,6 +871,10 @@ with tab1:
 with tab2:
     if "user" in st.session_state.failures:
         st.warning(f"Email/Identity lookup warning: {st.session_state.failures['user']}")
+
+    if st.session_state.get('user_brief') and not st.session_state['user_brief'].startswith("⚠️"):
+        with st.expander("🤖 Identity AI Analysis", expanded=True):
+            st.markdown(st.session_state['user_brief'])
 
     if not user_df.empty:
         # ── Metric cards ─────────────────────────────────────────────────────
@@ -1312,3 +1331,48 @@ with tab4:
         st.plotly_chart(style_fig(fig_geoint, height=540))
     else:
         st.markdown("<p style='color:var(--text-dim); font-size:0.85rem; font-style:italic;'>No geographic coordinates available to render tactical map. Ingest a Domain or IP address in the sidebar.</p>", unsafe_allow_html=True)
+
+with tab5:
+    st.markdown("<h3 style='color:var(--cyan); margin-bottom: 0;'>Gemini AI Executive Brief & Reporting</h3>", unsafe_allow_html=True)
+    st.markdown("<p style='color:var(--text-dim); font-size:0.85rem; margin-bottom: 20px;'>Generate a synthesized intelligence brief and download a PDF report of all findings.</p>", unsafe_allow_html=True)
+    
+    colA, colB = st.columns([1, 1])
+    
+    with colA:
+        if st.button("🧠 Generate AI Executive Brief", use_container_width=True):
+            with st.spinner("Analyzing OSINT data with Gemini..."):
+                summary = generate_osint_brief(
+                    domain_val, user_val, ip_val,
+                    domain_df, user_df, ip_df,
+                    risk_result
+                )
+                st.session_state['ai_summary'] = summary
+    
+    with colB:
+        if 'ai_summary' not in st.session_state:
+            st.session_state['ai_summary'] = ""
+            
+        # We allow downloading the PDF even if AI summary wasn't generated yet (it will just be blank)
+        pdf_bytes = build_pdf_report(
+            domain_val, user_val, ip_val,
+            domain_df, user_df, ip_df,
+            risk_result,
+            st.session_state['ai_summary']
+        )
+        st.download_button(
+            label="📄 Download PDF Report",
+            data=pdf_bytes,
+            file_name=f"OSINT_Report_{domain_val or user_val or ip_val or 'Target'}.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+
+    if st.session_state.get('ai_summary'):
+        st.markdown("---")
+        st.markdown("### Executive Brief")
+        st.markdown(f"<div style='background:var(--panel-bg); padding:20px; border-radius:8px; border:1px solid var(--border-color);'>{st.session_state['ai_summary']}</div>", unsafe_allow_html=True)# Force reload
+# Reload for model fix
+# Reload for wrap fix
+# API update
+# Fix FPDF width limit
+# Fix empty multi_cell bug
