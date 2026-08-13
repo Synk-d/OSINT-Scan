@@ -500,7 +500,7 @@ if sweep and target_value.strip():
             else:
                 st.session_state.ip_val = cleaned_val
                 try:
-                    with st.spinner(f"Geolocating {cleaned_val} — fetching live region area & network data…"):
+                    with st.spinner(f"Geolocating {cleaned_val}"):
                         df, src = run_ip_osint(st.session_state.ip_val)
                         st.session_state.ip_df = df
                         st.session_state.data_source["ip"] = src
@@ -514,7 +514,7 @@ if sweep and target_value.strip():
             else:
                 st.session_state.domain_val = cleaned_val
                 try:
-                    with st.spinner(f"Sweeping {cleaned_val} — live lookups in progress…"):
+                    with st.spinner(f"Sweeping {cleaned_val}"):
                         df, src = run_domain_osint(st.session_state.domain_val)
                         st.session_state.domain_df = df
                         st.session_state.data_source["domain"] = src
@@ -529,7 +529,7 @@ if sweep and target_value.strip():
         else:
             st.session_state.user_val = cleaned_val
             try:
-                with st.spinner(f"Sweeping {cleaned_val} — verifying Gravatar, GitHub, Keybase & 12+ email-linked services…"):
+                with st.spinner(f"Sweeping {cleaned_val}"):
                     df, src = run_user_osint(st.session_state.user_val)
                     st.session_state.user_df = df
                     st.session_state.data_source["user"] = src
@@ -555,10 +555,10 @@ if sweep and target_value.strip():
     
     # Automatically generate specific briefs after a sweep
     if st.session_state.domain_swept or st.session_state.ip_swept:
-        with st.spinner("Analyzing infrastructure with Gemini..."):
+        with st.spinner("Analyzing Domain"):
             st.session_state.domain_brief = generate_domain_brief(st.session_state.domain_val, st.session_state.domain_df, st.session_state.ip_df)
     if st.session_state.user_swept:
-        with st.spinner("Analyzing identity footprint with Gemini..."):
+        with st.spinner("Analyzing Email"):
             st.session_state.user_brief = generate_user_brief(st.session_state.user_val, st.session_state.user_df)
 
 
@@ -773,17 +773,9 @@ with tab1:
     if "ip" in st.session_state.failures:
         st.warning(f"IP lookup warning: {st.session_state.failures['ip']}")
 
-    if st.session_state.get('domain_brief'):
+    if st.session_state.get('domain_brief') and not st.session_state['domain_brief'].startswith("⚠️"):
         with st.expander("🤖 Domain AI Analysis", expanded=True):
-            if st.session_state['domain_brief'].startswith("⚠️"):
-                st.warning(st.session_state['domain_brief'])
-            else:
-                st.markdown(st.session_state['domain_brief'])
-    elif st.session_state.get('domain_swept'):
-        if st.button("🤖 Generate Domain AI Analysis", key="gen_domain_brief_btn"):
-            with st.spinner("Analyzing infrastructure with Gemini..."):
-                st.session_state.domain_brief = generate_domain_brief(st.session_state.domain_val, st.session_state.domain_df, st.session_state.ip_df)
-                st.rerun()
+            st.markdown(st.session_state['domain_brief'])
 
     # Render location highlight cards if data is available
     if not combined_infra_df.empty:
@@ -934,17 +926,9 @@ with tab2:
     if "user" in st.session_state.failures:
         st.warning(f"Email/Identity lookup warning: {st.session_state.failures['user']}")
 
-    if st.session_state.get('user_brief'):
+    if st.session_state.get('user_brief') and not st.session_state['user_brief'].startswith("⚠️"):
         with st.expander("🤖 Identity AI Analysis", expanded=True):
-            if st.session_state['user_brief'].startswith("⚠️"):
-                st.warning(st.session_state['user_brief'])
-            else:
-                st.markdown(st.session_state['user_brief'])
-    elif st.session_state.get('user_swept'):
-        if st.button("🤖 Generate Identity AI Analysis", key="gen_user_brief_btn"):
-            with st.spinner("Analyzing identity footprint with Gemini..."):
-                st.session_state.user_brief = generate_user_brief(st.session_state.user_val, st.session_state.user_df)
-                st.rerun()
+            st.markdown(st.session_state['user_brief'])
 
     if not user_df.empty:
         # ── Metric cards ─────────────────────────────────────────────────────
@@ -1445,8 +1429,3 @@ with tab5:
         st.markdown("---")
         st.markdown("### Executive Brief")
         st.markdown(f"<div style='background:var(--panel-bg); padding:20px; border-radius:8px; border:1px solid var(--border-color);'>{st.session_state['ai_summary']}</div>", unsafe_allow_html=True)# Force reload
-# Reload for model fix
-# Reload for wrap fix
-# API update
-# Fix FPDF width limit
-# Fix empty multi_cell bug
