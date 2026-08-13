@@ -865,21 +865,31 @@ with tab2:
         email_dom = user_val.split("@")[1] if is_email_target else "—"
         dom_match = "CONNECTED" if (domain_val and is_email_target and email_dom.lower() == domain_val.lower()) else email_dom
 
-        # Extract breach count from HIBP row if present
-        hibp_rows = user_df[user_df["platform"] == "HaveIBeenPwned"]
-        breach_count_display = "N/A"
+        # Extract threat intel from HudsonRock (infostealer) + LeakCheck (breach DB)
+        hr_rows = user_df[user_df["platform"] == "HudsonRock Cavalier"]
+        lc_rows = user_df[user_df["platform"] == "LeakCheck.io"]
+        breach_count_display = "—"
         breach_color = "var(--text-dim)"
-        if not hibp_rows.empty:
-            hibp_r = hibp_rows.iloc[0]
-            disp_name = str(hibp_r.get("display_name", ""))
-            if "No Breaches" in disp_name:
+        # Priority: HudsonRock compromise > LeakCheck exposed > clean
+        if not hr_rows.empty:
+            hr_r = hr_rows.iloc[0]
+            hr_name = str(hr_r.get("display_name", ""))
+            if "Compromised" in hr_name:
+                breach_count_display = "⚠ Compromised"
+                breach_color = "#E8544B"
+            else:
                 breach_count_display = "✓ Clean"
                 breach_color = "var(--cyan)"
-            elif "Exposed" in disp_name:
-                breach_count_display = disp_name.split("Exposed in ")[-1] if "Exposed in " in disp_name else "Exposed"
+        elif not lc_rows.empty:
+            lc_r = lc_rows.iloc[0]
+            lc_name = str(lc_r.get("display_name", ""))
+            if "Exposed" in lc_name:
+                bc = lc_r.get("breach_count", 0)
+                breach_count_display = f"{bc:,} records"
                 breach_color = "#E8544B"
-            elif "API key" in disp_name:
-                breach_count_display = "Key Needed"
+            elif "Not Found" in lc_name:
+                breach_count_display = "✓ Clean"
+                breach_color = "var(--cyan)"
 
         # Extract EmailRep reputation if present
         emailrep_rows = user_df[user_df["platform"] == "EmailRep.io"]
@@ -956,21 +966,66 @@ with tab2:
         # ── Breach & Reputation Detail Cards ─────────────────────────────
         intel_cols = st.columns(2)
         with intel_cols[0]:
-            if not hibp_rows.empty:
-                hibp_r = hibp_rows.iloc[0]
-                breach_names = hibp_r.get("breach_names", [])
-                breach_html = ""
-                if isinstance(breach_names, list) and breach_names:
-                    breach_html = "".join(f"<span class='chip danger' style='margin:2px;display:inline-block;'>{b}</span>" for b in breach_names[:10])
-                    if len(breach_names) > 10:
-                        breach_html += f"<span class='chip' style='margin:2px;'>+{len(breach_names)-10} more</span>"
-                st.markdown(f"""
-                <div style="background:var(--panel-raised); border:1px solid var(--line); border-left:4px solid #E8544B; padding:14px; border-radius:6px; margin-bottom:12px;">
-                    <div style="font-size:0.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim); margin-bottom:6px;">HaveIBeenPwned Breach Intelligence</div>
-                    <div style="font-size:1rem; font-weight:700; color:var(--text); margin-bottom:8px;">{hibp_r.get('display_name', '—')}</div>
-                    {breach_html if breach_html else "<span style='color:var(--cyan); font-size:0.85rem;'>✓ No known breaches</span>"}
-                </div>
-                """, unsafe_allow_html=True)
+            # ── HudsonRock Cavalier — infostealer card ────────────────────
+            if not hr_rows.empty:
+                hr_r = hr_rows.iloc[0]
+                is_compromised = "Compromised" in str(hr_r.get("display_name", ""))
+                border_clr = "#E8544B" if is_compromised else "var(--cyan)"
+                malware_list = hr_r.get("malware_families", []) or []
+                countries_list = hr_r.get("countries", []) or []
+                comp_count = hr_r.get("compromised_computers", 0)
+
+                # Pre-build all HTML fragments as variables
+                mf_chips = "".join(
+                    f"<span style='background:rgba(232,84,75,0.15); color:#E8544B; border:1px solid rgba(232,84,75,0.4); border-radius:4px; padding:2px 8px; font-size:0.75rem; margin:2px; display:inline-block;'>{m}</span>"
+                    for m in malware_list[:6]
+                )
+                if is_compromised:
+                    countries_str = ", ".join(countries_list[:3]) if countries_list else "—"
+                    detail_line = f"<div style='font-size:0.8rem; color:var(--text-dim); margin-bottom:6px;'>Stealer logs: <strong style='color:#E8544B;'>{comp_count}</strong> &nbsp;·&nbsp; Countries: {countries_str}</div>"
+                    body_content = detail_line + (mf_chips if mf_chips else "")
+                else:
+                    body_content = "<span style='color:#4ECDC4; font-size:0.85rem;'>&#10003; No infostealer compromise detected</span>"
+
+                hr_display = hr_r.get("display_name", "—")
+                st.markdown(
+                    f"<div style='background:var(--panel-raised); border:1px solid var(--line); border-left:4px solid {border_clr}; padding:14px; border-radius:6px; margin-bottom:12px;'>"
+                    f"<div style='font-size:0.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim); margin-bottom:6px;'>HudsonRock — Infostealer Intelligence</div>"
+                    f"<div style='font-size:1rem; font-weight:700; color:var(--text); margin-bottom:8px;'>{hr_display}</div>"
+                    f"{body_content}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+            # ── LeakCheck.io — breach database card ───────────────────────
+            if not lc_rows.empty:
+                lc_r = lc_rows.iloc[0]
+                lc_name = str(lc_r.get("display_name", "—"))
+                is_lc_exposed = "Exposed" in lc_name
+                lc_border = "#E8544B" if is_lc_exposed else "var(--cyan)"
+                sources = lc_r.get("sources", []) or []
+                fields = lc_r.get("exposed_fields", []) or []
+
+                # Pre-build HTML fragments
+                src_chips = "".join(
+                    f"<span style='background:rgba(232,84,75,0.15); color:#E8544B; border:1px solid rgba(232,84,75,0.4); border-radius:4px; padding:2px 8px; font-size:0.75rem; margin:2px; display:inline-block;'>{s}</span>"
+                    for s in sources[:8]
+                ) if is_lc_exposed else ""
+                field_chips = "".join(
+                    f"<span style='background:rgba(155,89,182,0.15); color:#9B59B6; border:1px solid rgba(155,89,182,0.4); border-radius:4px; padding:2px 8px; font-size:0.75rem; margin:2px; display:inline-block;'>{f}</span>"
+                    for f in fields[:6]
+                ) if is_lc_exposed else ""
+                fields_line = f"<div style='margin-top:6px; font-size:0.75rem; color:var(--text-dim);'>Exposed data types: {field_chips}</div>" if field_chips else ""
+                clean_msg = "" if is_lc_exposed else "<span style='color:#4ECDC4; font-size:0.85rem;'>&#10003; Not found in public breach records</span>"
+
+                st.markdown(
+                    f"<div style='background:var(--panel-raised); border:1px solid var(--line); border-left:4px solid {lc_border}; padding:14px; border-radius:6px; margin-bottom:12px;'>"
+                    f"<div style='font-size:0.7rem; text-transform:uppercase; letter-spacing:.08em; color:var(--text-dim); margin-bottom:6px;'>LeakCheck.io — Breach Database</div>"
+                    f"<div style='font-size:1rem; font-weight:700; color:var(--text); margin-bottom:8px;'>{lc_name}</div>"
+                    f"{src_chips}{fields_line}{clean_msg}"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
 
         with intel_cols[1]:
             if not emailrep_rows.empty:

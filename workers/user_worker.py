@@ -265,62 +265,125 @@ def _check_emailrep(email: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _check_hibp_breaches(email: str) -> Optional[Dict[str, Any]]:
+def _check_hudsonrock(email: str) -> Optional[Dict[str, Any]]:
     """
-    HaveIBeenPwned — publicly accessible breach listing (no API key required
-    for the v2 public list of breach names). Returns a record listing which
-    known breaches the email was found in.
+    HudsonRock Cavalier API — FREE, no authentication required.
+    Checks whether the email was found in infostealer malware logs
+    (Redline, Vidar, Raccoon, etc.). More current than breach databases
+    because it covers active credential theft, not just historical leaks.
     """
     try:
-        # HIBP v3 requires an API key for /breachedaccount; however we can
-        # use the public pwnedpasswords approach or check via emailrep.
-        # Use v2 unauthenticated for breach name list (deprecated but still
-        # functional for public queries without the Pwned-Api-Key header).
         resp = get_with_retry(
-            f"https://haveibeenpwned.com/api/v2/breachedaccount/{quote(email)}",
+            "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-email",
+            params={"email": email},
             timeout=HTTP_TIMEOUT,
-            headers={
-                **HEADERS,
-                "Accept": "application/json",
-                "User-Agent": "OSINT-Dashboard-Research-Tool/1.0",
-            },
+            headers={**HEADERS, "Accept": "application/json"},
         )
-        if resp.status_code == 404:
-            # Confirmed not found in any breach
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        stealers = data.get("stealers", [])
+        total = len(stealers)
+
+        if total == 0:
             return _make_record(
-                "HaveIBeenPwned", "Breach Intelligence",
-                "https://haveibeenpwned.com",
-                "No Breaches Found ✓",
+                "HudsonRock Cavalier", "Infostealer Intelligence",
+                "https://cavalier.hudsonrock.com",
+                "✓ Not in Infostealer Logs",
                 95,
                 associated_email=email,
-                bio_keywords=["no-breaches", "clean-email"],
+                bio_keywords=["no-infostealer-compromise", "clean-credentials"],
+                extra={"compromised_computers": 0, "stealers": []},
             )
-        if resp.status_code == 200:
-            breaches = resp.json()
-            names = [b.get("Name", "") for b in breaches if b.get("Name")]
-            kws = (["hibp-breach"] + names[:7])[:8]
-            return _make_record(
-                "HaveIBeenPwned", "Breach Intelligence",
-                f"https://haveibeenpwned.com/account/{quote(email)}",
-                f"Exposed in {len(names)} Breach(es)",
-                98,
-                associated_email=email,
-                bio_keywords=kws,
-                extra={"breach_names": names},
-            )
-        # 401 = key required but v3 endpoint hit
-        if resp.status_code == 401:
-            return _make_record(
-                "HaveIBeenPwned", "Breach Intelligence",
-                "https://haveibeenpwned.com",
-                "HIBP (API key required for detail)",
-                70,
-                associated_email=email,
-                bio_keywords=["hibp-api-key-needed"],
-            )
+
+        # Extract stealer details
+        malware_families: List[str] = []
+        countries: List[str] = []
+        for s in stealers:
+            mf = s.get("malware_family") or s.get("stealer_family") or ""
+            if mf and mf not in malware_families:
+                malware_families.append(mf)
+            country = s.get("computer_name_country") or s.get("country") or ""
+            if country and country not in countries:
+                countries.append(country)
+
+        kws = (
+            ["infostealer-compromised"]
+            + malware_families[:4]
+            + countries[:2]
+        )[:8]
+
+        return _make_record(
+            "HudsonRock Cavalier", "Infostealer Intelligence",
+            "https://cavalier.hudsonrock.com",
+            f"⚠ Compromised — {total} Stealer Log(s)",
+            99,
+            associated_email=email,
+            bio_keywords=kws,
+            extra={
+                "compromised_computers": total,
+                "malware_families": malware_families,
+                "countries": countries,
+                "stealers": stealers[:5],
+            },
+        )
     except Exception:
-        pass
-    return None
+        return None
+
+
+def _check_leakcheck(email: str) -> Optional[Dict[str, Any]]:
+    """
+    LeakCheck.io public API — FREE, no authentication required.
+    Returns how many records were found and which data sources/breach names
+    contained the email, including the types of data exposed (password, phone, etc.).
+    """
+    try:
+        resp = get_with_retry(
+            "https://leakcheck.io/api/public",
+            params={"check": email},
+            timeout=HTTP_TIMEOUT,
+            headers={**HEADERS, "Accept": "application/json"},
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        if not data.get("success"):
+            return None
+
+        found = data.get("found", 0)
+        sources = data.get("sources", [])     # list of {name, date}
+        fields = data.get("fields", [])       # exposed field types
+
+        if found == 0:
+            return _make_record(
+                "LeakCheck.io", "Breach Intelligence",
+                "https://leakcheck.io",
+                "✓ Not Found in Known Breaches",
+                93,
+                associated_email=email,
+                bio_keywords=["no-breach-found", "clean-email"],
+                extra={"breach_count": 0, "sources": []},
+            )
+
+        source_names = [s.get("name", "") for s in sources if s.get("name")]
+        kws = (["breach-exposed"] + source_names[:5] + fields[:2])[:8]
+
+        return _make_record(
+            "LeakCheck.io", "Breach Intelligence",
+            "https://leakcheck.io",
+            f"Exposed in {len(source_names)} Breach Source(s) ({found:,} records)",
+            97,
+            associated_email=email,
+            bio_keywords=kws,
+            extra={
+                "breach_count": found,
+                "sources": source_names[:15],
+                "exposed_fields": fields[:10],
+            },
+        )
+    except Exception:
+        return None
+
 
 
 def _check_hunter_domain(email_domain: str) -> Optional[Dict[str, Any]]:
@@ -1035,7 +1098,8 @@ def run_user_osint(username_value: str) -> pd.DataFrame:
         email_engines = [
             lambda: _check_gravatar_by_email(email_clean),
             lambda: _check_emailrep(email_clean),
-            lambda: _check_hibp_breaches(email_clean),
+            lambda: _check_hudsonrock(email_clean),
+            lambda: _check_leakcheck(email_clean),
             lambda: _check_clearbit_person(email_clean),
             lambda: _check_github_by_email(email_clean),
         ]
