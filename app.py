@@ -773,9 +773,17 @@ with tab1:
     if "ip" in st.session_state.failures:
         st.warning(f"IP lookup warning: {st.session_state.failures['ip']}")
 
-    if st.session_state.get('domain_brief') and not st.session_state['domain_brief'].startswith("⚠️"):
+    if st.session_state.get('domain_brief'):
         with st.expander("🤖 Domain AI Analysis", expanded=True):
-            st.markdown(st.session_state['domain_brief'])
+            if st.session_state['domain_brief'].startswith("⚠️"):
+                st.warning(st.session_state['domain_brief'])
+            else:
+                st.markdown(st.session_state['domain_brief'])
+    elif st.session_state.get('domain_swept'):
+        if st.button("🤖 Generate Domain AI Analysis", key="gen_domain_brief_btn"):
+            with st.spinner("Analyzing infrastructure with Gemini..."):
+                st.session_state.domain_brief = generate_domain_brief(st.session_state.domain_val, st.session_state.domain_df, st.session_state.ip_df)
+                st.rerun()
 
     # Render location highlight cards if data is available
     if not combined_infra_df.empty:
@@ -926,9 +934,17 @@ with tab2:
     if "user" in st.session_state.failures:
         st.warning(f"Email/Identity lookup warning: {st.session_state.failures['user']}")
 
-    if st.session_state.get('user_brief') and not st.session_state['user_brief'].startswith("⚠️"):
+    if st.session_state.get('user_brief'):
         with st.expander("🤖 Identity AI Analysis", expanded=True):
-            st.markdown(st.session_state['user_brief'])
+            if st.session_state['user_brief'].startswith("⚠️"):
+                st.warning(st.session_state['user_brief'])
+            else:
+                st.markdown(st.session_state['user_brief'])
+    elif st.session_state.get('user_swept'):
+        if st.button("🤖 Generate Identity AI Analysis", key="gen_user_brief_btn"):
+            with st.spinner("Analyzing identity footprint with Gemini..."):
+                st.session_state.user_brief = generate_user_brief(st.session_state.user_val, st.session_state.user_df)
+                st.rerun()
 
     if not user_df.empty:
         # ── Metric cards ─────────────────────────────────────────────────────
